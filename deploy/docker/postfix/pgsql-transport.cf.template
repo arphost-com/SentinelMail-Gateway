@@ -1,0 +1,8 @@
+# Postfix → Postgres lookup: which downstream MX serves %s ?
+# Returns "smtp:[host]:port" — postfix's transport_maps format.
+# Lowest priority gateway wins.
+hosts = postgres
+user = ${POSTGRES_USER}
+password = ${POSTGRES_PASSWORD}
+dbname = ${POSTGRES_DB}
+query = SELECT 'smtp:[' || g.host || ']:' || g.port FROM gateways g JOIN domains d ON g.domain_id = d.id WHERE d.name = '%s' AND d.is_active = true AND g.is_active = true ORDER BY g.priority ASC, g.created_at ASC LIMIT 1

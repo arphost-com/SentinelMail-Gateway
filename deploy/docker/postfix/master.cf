@@ -1,0 +1,47 @@
+# SentinelMail Gateway — Postfix master.cf (MVP 1 baseline)
+#
+# chroot=n on EVERY service that does network or DNS work. Inside a
+# single-purpose container the chroot adds no real security, and the chroot
+# directory has no /etc/resolv.conf, so any daemon that needs Docker's
+# embedded DNS at 127.0.0.11 fails. Daemons that need DNS:
+#   - smtpd (resolve milter target rspamd:11332)
+#   - trivial-rewrite (resolve `postgres` for relay_domains + transport_maps
+#     pgsql lookups; without DNS these return "Temporary lookup failure"
+#     and every inbound message is rejected with 451)
+#   - smtp / relay (resolve downstream MX hosts at delivery time)
+#   - lmtp (resolve LMTP server if configured)
+# Easier to disable chroot everywhere than to keep tracking which daemons
+# pick up new DNS dependencies as the config evolves.
+
+smtp      inet  n       -       n       -       -       smtpd
+submission inet n       -       n       -       -       smtpd
+  -o syslog_name=postfix/submission
+  -o smtpd_tls_security_level=may
+  -o smtpd_sasl_auth_enable=no
+  -o smtpd_client_restrictions=permit_mynetworks,reject
+
+# postlog is required by postfix 3.4+; the integrity check refuses to start without it.
+postlog   unix-dgram n  -       n       -       1       postlogd
+pickup    unix  n       -       n       60      1       pickup
+cleanup   unix  n       -       n       -       0       cleanup
+qmgr      unix  n       -       n       300     1       qmgr
+tlsmgr    unix  -       -       n       1000?   1       tlsmgr
+rewrite   unix  -       -       n       -       -       trivial-rewrite
+bounce    unix  -       -       n       -       0       bounce
+defer     unix  -       -       n       -       0       bounce
+trace     unix  -       -       n       -       0       bounce
+verify    unix  -       -       n       -       1       verify
+flush     unix  n       -       n       1000?   0       flush
+proxymap  unix  -       -       n       -       -       proxymap
+proxywrite unix -       -       n       -       1       proxymap
+smtp      unix  -       -       n       -       -       smtp
+relay     unix  -       -       n       -       -       smtp
+showq     unix  n       -       n       -       -       showq
+error     unix  -       -       n       -       -       error
+retry     unix  -       -       n       -       -       error
+discard   unix  -       -       n       -       -       discard
+local     unix  -       n       n       -       -       local
+virtual   unix  -       n       n       -       -       virtual
+lmtp      unix  -       -       n       -       -       lmtp
+anvil     unix  -       -       n       -       1       anvil
+scache    unix  -       -       n       -       1       scache

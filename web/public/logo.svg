@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 220 40" role="img" aria-label="SentinelMail Gateway">
+  <defs>
+    <linearGradient id="smg-shield-lg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#3b82f6"/>
+      <stop offset="100%" stop-color="#1e40af"/>
+    </linearGradient>
+  </defs>
+  <g transform="translate(2 4)">
+    <path d="M16 1.5 L28.5 5.5 V14 C28.5 22.4 22.6 28.6 16 30.5 C9.4 28.6 3.5 22.4 3.5 14 V5.5 Z"
+          fill="url(#smg-shield-lg)"/>
+    <rect x="8" y="11" width="16" height="11" rx="1.2" fill="#ffffff"/>
+    <path d="M8 11.6 L16 18 L24 11.6" fill="none" stroke="#1e40af" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round"/>
+    <line x1="8.6" y1="22" x2="23.4" y2="22" stroke="#34d399" stroke-width="1.8" stroke-linecap="round"/>
+  </g>
+  <text x="42" y="23" font-family="-apple-system, 'Segoe UI', system-ui, sans-serif" font-size="18" font-weight="700" fill="currentColor" letter-spacing="-0.2">
+    Sentinel<tspan font-weight="400">Mail</tspan>
+  </text>
+  <text x="42" y="35" font-family="-apple-system, 'Segoe UI', system-ui, sans-serif" font-size="9" font-weight="500" fill="currentColor" opacity="0.65" letter-spacing="1.5">
+    GATEWAY
+  </text>
+</svg>

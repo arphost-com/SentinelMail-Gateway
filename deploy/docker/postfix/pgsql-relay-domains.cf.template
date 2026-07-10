@@ -1,0 +1,7 @@
+# Postfix → Postgres lookup: is %s a domain the gateway accepts mail for?
+# Materialised at container start by entrypoint.sh from POSTGRES_* env vars.
+hosts = postgres
+user = ${POSTGRES_USER}
+password = ${POSTGRES_PASSWORD}
+dbname = ${POSTGRES_DB}
+query = SELECT name FROM domains WHERE name = '%s' AND is_active = true LIMIT 1

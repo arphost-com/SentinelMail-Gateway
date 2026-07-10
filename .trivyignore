@@ -1,0 +1,8 @@
+# Accepted findings — keep one line per ID with justification next to it.
+
+# Postfix master must bind privileged ports 25/587 and manage queue dirs as
+# root; it performs privilege separation internally, dropping to the `postfix`
+# user for worker daemons. There is no safe replacement for an MTA.
+DS002
+DS-0002
+AVD-DS-0002

@@ -1,0 +1,54 @@
+# Go
+/bin/
+/dist/
+*.test
+*.out
+coverage.*
+go.work
+go.work.sum
+vendor/
+
+# Node / web
+web/node_modules/
+web/dist/
+web/.vite/
+web/coverage/
+web/tsconfig.tsbuildinfo
+web/*.tsbuildinfo
+*.log
+npm-debug.log*
+pnpm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Python workers
+workers/**/__pycache__/
+workers/**/*.pyc
+workers/**/.venv/
+workers/**/.pytest_cache/
+workers/**/.mypy_cache/
+workers/**/.ruff_cache/
+
+# Env / secrets
+.env
+.env.local
+.env.*.local
+deploy/docker/.env
+deploy/docker/secrets/
+
+# Runtime data (mounted volumes for local dev)
+deploy/docker/data/
+deploy/docker/logs/
+
+# Editor / OS
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# Build artifacts
+*.tar.gz
+*.zip
+.claude/

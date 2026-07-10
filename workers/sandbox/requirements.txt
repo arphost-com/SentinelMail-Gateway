@@ -1,0 +1,7 @@
+redis==5.0.8
+httpx==0.27.2
+structlog==24.4.0
+pyzbar==0.1.9
+Pillow>=12.2.0,<13
+# v3 - AI phishing scoring (optional; handler degrades gracefully if no key)
+anthropic==0.39.0

@@ -1,0 +1,64 @@
+# SentinelMail Gateway — Postfix baseline (MVP 1)
+# Per-tenant transport maps and DKIM signing are wired in MVP 1 task #5.
+
+compatibility_level = 3.6
+smtpd_banner = $myhostname ESMTP SentinelMail Gateway
+biff = no
+append_dot_mydomain = no
+readme_directory = no
+
+# myhostname / mynetworks injected by entrypoint.sh from env
+inet_interfaces = all
+inet_protocols = ipv4
+mydestination =
+
+# Per-tenant acceptance + transport — lookups against the api's domains
+# and gateways tables in postgres. Templated by entrypoint.sh so the
+# POSTGRES_PASSWORD never lives in the image.
+#
+# relay_domains controls which inbound RCPT TO addresses we accept;
+# without an entry here, postfix returns "Relay access denied" before
+# we even get to scan the message.
+#
+# transport_maps tells postfix which downstream MX to deliver to.
+# Returns "smtp:[host]:port" from the lowest-priority active gateway.
+relay_domains  = pgsql:/etc/postfix/pgsql-relay-domains.cf
+transport_maps = pgsql:/etc/postfix/pgsql-transport.cf
+
+# Size + concurrency
+message_size_limit = 52428800
+mailbox_size_limit = 0
+
+# TLS (self-signed for MVP; replace via mounted certs in production)
+smtpd_tls_security_level = may
+smtpd_tls_cert_file = /etc/ssl/certs/ssl-cert-snakeoil.pem
+smtpd_tls_key_file  = /etc/ssl/private/ssl-cert-snakeoil.key
+smtpd_tls_loglevel = 1
+smtp_tls_security_level = may
+
+# Restrictions — keep minimal; Rspamd does the heavy lifting via milter
+smtpd_helo_required = yes
+smtpd_helo_restrictions =
+  permit_mynetworks,
+  reject_invalid_helo_hostname,
+  reject_non_fqdn_helo_hostname
+smtpd_sender_restrictions =
+  permit_mynetworks,
+  reject_non_fqdn_sender,
+  reject_unknown_sender_domain
+smtpd_recipient_restrictions =
+  permit_mynetworks,
+  reject_non_fqdn_recipient,
+  reject_unknown_recipient_domain,
+  reject_unauth_destination
+
+# Rspamd milter (proxy + scan + DKIM)
+milter_protocol = 6
+milter_default_action = accept
+smtpd_milters = inet:rspamd:11332
+non_smtpd_milters = inet:rspamd:11332
+milter_mail_macros = i {mail_addr} {client_addr} {client_name} {auth_type} {auth_authen}
+
+# entrypoint.sh tails this file to stdout and forwards notable SMTP-only
+# events into the API so pre-ingest rejects/deferrals are visible.
+maillog_file = /var/log/mail.log

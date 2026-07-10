@@ -1,0 +1,228 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/*
+ * Six themes from the build spec, defined as CSS variables so Tailwind tokens
+ * pick them up automatically (see tailwind.config.ts). RGB triplets — no
+ * `rgb()` wrapper — so we can use `text-fg/80` style alpha modifiers.
+ */
+
+:root,
+[data-theme="light"] {
+  color-scheme: light;
+  --bg: 248 250 252;
+  --surface: 255 255 255;
+  --muted: 241 245 249;
+  --border: 226 232 240;
+  --fg: 15 23 42;
+  --subtle: 100 116 139;
+  --accent: 37 99 235;
+  --accent-fg: 255 255 255;
+  --danger: 220 38 38;
+  --warning: 217 119 6;
+  --success: 22 163 74;
+  --focus: 37 99 235;
+  --chart-1: 37 99 235;
+  --chart-2: 220 38 38;
+  --chart-3: 217 119 6;
+  --chart-4: 22 163 74;
+  --chart-5: 124 58 237;
+  --chart-6: 8 145 178;
+  --chart-7: 190 18 60;
+  --chart-8: 75 85 99;
+  --radius: 0.5rem;
+  --text-base: 1rem;
+}
+
+[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: 9 14 26;
+  --surface: 17 24 39;
+  --muted: 30 41 59;
+  --border: 51 65 85;
+  --fg: 241 245 249;
+  --subtle: 148 163 184;
+  --accent: 96 165 250;
+  --accent-fg: 9 14 26;
+  --danger: 248 113 113;
+  --warning: 251 191 36;
+  --success: 74 222 128;
+  --focus: 96 165 250;
+  --chart-1: 96 165 250;
+  --chart-2: 248 113 113;
+  --chart-3: 251 191 36;
+  --chart-4: 74 222 128;
+  --chart-5: 196 181 253;
+  --chart-6: 103 232 249;
+  --chart-7: 251 113 133;
+  --chart-8: 203 213 225;
+  --radius: 0.5rem;
+  --text-base: 1rem;
+}
+
+[data-theme="hc-light"] {
+  color-scheme: light;
+  --bg: 255 255 255;
+  --surface: 255 255 255;
+  --muted: 240 240 240;
+  --border: 0 0 0;
+  --fg: 0 0 0;
+  --subtle: 30 30 30;
+  --accent: 0 0 192;
+  --accent-fg: 255 255 255;
+  --danger: 180 0 0;
+  --warning: 153 102 0;
+  --success: 0 102 0;
+  --focus: 0 0 0;
+  --chart-1: 0 0 192;
+  --chart-2: 180 0 0;
+  --chart-3: 153 102 0;
+  --chart-4: 0 102 0;
+  --chart-5: 89 0 179;
+  --chart-6: 0 102 153;
+  --chart-7: 153 0 76;
+  --chart-8: 0 0 0;
+  --radius: 0.25rem;
+  --text-base: 1rem;
+}
+
+[data-theme="hc-dark"] {
+  color-scheme: dark;
+  --bg: 0 0 0;
+  --surface: 0 0 0;
+  --muted: 24 24 24;
+  --border: 255 255 255;
+  --fg: 255 255 255;
+  --subtle: 220 220 220;
+  --accent: 0 255 255;
+  --accent-fg: 0 0 0;
+  --danger: 255 80 80;
+  --warning: 255 200 0;
+  --success: 100 255 100;
+  --focus: 255 255 0;
+  --chart-1: 0 255 255;
+  --chart-2: 255 80 80;
+  --chart-3: 255 200 0;
+  --chart-4: 100 255 100;
+  --chart-5: 255 140 255;
+  --chart-6: 120 180 255;
+  --chart-7: 255 150 180;
+  --chart-8: 255 255 255;
+  --radius: 0.25rem;
+  --text-base: 1rem;
+}
+
+/* Colorblind-safe — uses blue + orange instead of red/green for status. */
+[data-theme="cb-safe"] {
+  color-scheme: light;
+  --bg: 250 250 248;
+  --surface: 255 255 255;
+  --muted: 235 235 230;
+  --border: 200 200 195;
+  --fg: 15 23 42;
+  --subtle: 90 90 90;
+  --accent: 0 90 181;
+  --accent-fg: 255 255 255;
+  --danger: 213 94 0;
+  --warning: 230 159 0;
+  --success: 0 114 178;
+  --focus: 0 90 181;
+  --chart-1: 0 114 178;
+  --chart-2: 213 94 0;
+  --chart-3: 230 159 0;
+  --chart-4: 0 158 115;
+  --chart-5: 204 121 167;
+  --chart-6: 86 180 233;
+  --chart-7: 240 228 66;
+  --chart-8: 80 80 80;
+  --radius: 0.5rem;
+  --text-base: 1rem;
+}
+
+[data-theme="large"] {
+  color-scheme: light;
+  --bg: 248 250 252;
+  --surface: 255 255 255;
+  --muted: 241 245 249;
+  --border: 203 213 225;
+  --fg: 15 23 42;
+  --subtle: 71 85 105;
+  --accent: 37 99 235;
+  --accent-fg: 255 255 255;
+  --danger: 220 38 38;
+  --warning: 217 119 6;
+  --success: 22 163 74;
+  --focus: 37 99 235;
+  --chart-1: 37 99 235;
+  --chart-2: 220 38 38;
+  --chart-3: 217 119 6;
+  --chart-4: 22 163 74;
+  --chart-5: 124 58 237;
+  --chart-6: 8 145 178;
+  --chart-7: 190 18 60;
+  --chart-8: 75 85 99;
+  --radius: 0.625rem;
+  --text-base: 1.15rem;
+}
+
+/* Reduced motion — overrides only when the toggle is on AND when the user
+   has the OS preference set, so we don't surprise non-toggle users. */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+[data-motion="reduced"] *,
+[data-motion="reduced"] *::before,
+[data-motion="reduced"] *::after {
+  animation-duration: 0.001ms !important;
+  animation-iteration-count: 1 !important;
+  transition-duration: 0.001ms !important;
+  scroll-behavior: auto !important;
+}
+
+/* ---------- global element resets keyed to the theme ---------- */
+
+html, body, #root {
+  height: 100%;
+}
+
+body {
+  background-color: rgb(var(--bg));
+  color: rgb(var(--fg));
+  font-size: var(--text-base);
+  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+
+/* Visible focus everywhere — accessibility requirement from the spec. */
+:focus-visible {
+  outline: 2px solid rgb(var(--focus));
+  outline-offset: 2px;
+  border-radius: var(--radius);
+}
+
+a {
+  color: rgb(var(--accent));
+}
+a:hover {
+  text-decoration: underline;
+}
+
+/* Skip-link styles (visible on focus only). */
+.skip-link {
+  position: absolute;
+  left: -9999px;
+  top: 0;
+  background: rgb(var(--accent));
+  color: rgb(var(--accent-fg));
+  padding: 0.5rem 0.75rem;
+  z-index: 100;
+}
+.skip-link:focus {
+  left: 0.5rem;
+  top: 0.5rem;
+}

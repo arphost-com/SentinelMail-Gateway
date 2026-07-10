@@ -1,0 +1,10 @@
+# Top-level rspamd config overlay. Rspamd's main config does an implicit
+# .include of $LOCAL_CONFDIR/rspamd.conf.local at the very top level
+# (unlike local.d/, which only merges into sections matching the filename).
+# This is the right home for directives that don't live inside any block.
+
+# Load the SentinelMail post-scan ingest postfilter. Without this the
+# smg_ingest.lua snippet at /etc/rspamd/lua.local.d/ is inert and the
+# /api/v1/mail/events callback is never made (mail_logs stays empty,
+# UI dashboard shows zeros even though postfix is forwarding mail).
+lua = "/etc/rspamd/lua.local.d/smg_ingest.lua";
