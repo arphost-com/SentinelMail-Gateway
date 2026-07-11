@@ -37,10 +37,6 @@ The screenshots below show the current UI across dashboard, reporting, quarantin
 
 ### Configuration
 
-![SentinelMail domain settings](docs/screenshots/readme/sentinelmail-domains.png)
-
-![SentinelMail gateway settings](docs/screenshots/readme/sentinelmail-gateways.png)
-
 ![SentinelMail new gateway modal](docs/screenshots/readme/sentinelmail-new-gateway.png)
 
 ![SentinelMail user settings light theme](docs/screenshots/readme/sentinelmail-user-settings-light.png)
@@ -52,14 +48,6 @@ The screenshots below show the current UI across dashboard, reporting, quarantin
 ### Integration Examples
 
 These additional screenshots show related administrative/integration workflows from the same release documentation set.
-
-![QuickBooks addon mapping](docs/screenshots/readme/quickbooks-addons-map.png)
-
-![QuickBooks invoice export list](docs/screenshots/readme/quickbooks-export-invoices-list.png)
-
-![QuickBooks invoice export confirmation](docs/screenshots/readme/quickbooks-export-confirm-list.png)
-
-![Stack Manager server selector](docs/screenshots/readme/stack-manager-server-selector.png)
 
 ---
 
