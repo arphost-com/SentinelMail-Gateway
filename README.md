@@ -13,6 +13,56 @@ SentinelMail is sold as infrastructure software, not shared-hosting software. It
 - **In-app docs** at **Docs** in the sidebar once you're signed in
 - **This README** focuses on architecture, REST API, repo layout, and dev quickstart
 
+## Screenshots
+
+SentinelMail Gateway provides a tenant-aware operations console for mail security teams and MSPs. The dashboard summarizes current mail flow, enforcement outcomes, threat signals, and investigation paths without requiring shell access. Operators can drill from high-level reporting into mailbox, quarantine, threat scans, sender allow/block lists, domain settings, and downstream gateway configuration.
+
+The screenshots below show the current UI across dashboard, reporting, quarantine, mailbox, settings, and configuration workflows. The signed-in account email is blurred in screenshots where it appears.
+
+### Operations Overview
+
+![SentinelMail dashboard dark theme](docs/screenshots/readme/sentinelmail-dashboard-dark.png)
+
+![SentinelMail reports view](docs/screenshots/readme/sentinelmail-reports.png)
+
+![SentinelMail threat scans](docs/screenshots/readme/sentinelmail-threat-scans.png)
+
+### Mail Handling
+
+![SentinelMail mailbox](docs/screenshots/readme/sentinelmail-mailbox-dark.png)
+
+![SentinelMail quarantine](docs/screenshots/readme/sentinelmail-quarantine-light.png)
+
+![SentinelMail allow and block lists](docs/screenshots/readme/sentinelmail-allow-block-lists.png)
+
+### Configuration
+
+![SentinelMail domain settings](docs/screenshots/readme/sentinelmail-domains.png)
+
+![SentinelMail gateway settings](docs/screenshots/readme/sentinelmail-gateways.png)
+
+![SentinelMail new gateway modal](docs/screenshots/readme/sentinelmail-new-gateway.png)
+
+![SentinelMail user settings light theme](docs/screenshots/readme/sentinelmail-user-settings-light.png)
+
+![SentinelMail user settings dark theme](docs/screenshots/readme/sentinelmail-user-settings-dark.png)
+
+![SentinelMail high contrast theme](docs/screenshots/readme/sentinelmail-user-settings-high-contrast.png)
+
+### Integration Examples
+
+These additional screenshots show related administrative/integration workflows from the same release documentation set.
+
+![QuickBooks addon mapping](docs/screenshots/readme/quickbooks-addons-map.png)
+
+![QuickBooks invoice export list](docs/screenshots/readme/quickbooks-export-invoices-list.png)
+
+![QuickBooks invoice export confirmation](docs/screenshots/readme/quickbooks-export-confirm-list.png)
+
+![Stack Manager server selector](docs/screenshots/readme/stack-manager-server-selector.png)
+
+---
+
 ## Who This Is For
 
 | Deployment | Fit | Notes |
