@@ -176,6 +176,50 @@ const SECTIONS: DocSection[] = [
     ),
   },
   {
+    id: "screen-references",
+    title: "Screen references",
+    body: (
+      <>
+        <p>
+          Customer-facing screenshots should only come from a populated, sanitized environment.
+          Until approved images are available, use the screen names below when guiding customers.
+          Maintainers should follow <code>docs/screenshots/README.md</code> before adding images.
+        </p>
+        <table className="text-sm w-full mt-2 border-collapse">
+          <thead>
+            <tr className="text-subtle text-left">
+              <th className="pr-3 py-1">Workflow</th>
+              <th className="pr-3 py-1">Screen</th>
+              <th className="py-1">What to look for</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr className="border-t border-border">
+              <td className="pr-3 py-1">Check gateway health</td>
+              <td className="pr-3 py-1">Dashboard</td>
+              <td className="py-1">Processed, delivered, quarantined, rejected, inbound, outbound, and confirmed-phishing counts.</td>
+            </tr>
+            <tr className="border-t border-border">
+              <td className="pr-3 py-1">Add or disable a user</td>
+              <td className="pr-3 py-1">Users</td>
+              <td className="py-1">Role, status, last activity, password reset, and disable controls.</td>
+            </tr>
+            <tr className="border-t border-border">
+              <td className="pr-3 py-1">Investigate a held message</td>
+              <td className="pr-3 py-1">Quarantine</td>
+              <td className="py-1">Details tabs with summary, content, headers, and raw metadata where available.</td>
+            </tr>
+            <tr className="border-t border-border">
+              <td className="pr-3 py-1">Trace missing mail</td>
+              <td className="pr-3 py-1">Mail logs, then SMTP events</td>
+              <td className="py-1">Mail-log disposition first; pre-ingest rejects, TLS failures, and downstream deferrals second.</td>
+            </tr>
+          </tbody>
+        </table>
+      </>
+    ),
+  },
+  {
     id: "quarantine",
     title: "Quarantine",
     body: (

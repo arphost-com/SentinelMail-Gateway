@@ -9,6 +9,8 @@ Task-oriented guides for operators, admins, and end users. Each page stands alon
 | [use.md](use.md)                    | Everyone | Daily operation — dashboard, quarantine, settings, MFA |
 | [role-guides.md](role-guides.md)    | Everyone | Plain-English "what can I do?" docs for every user type |
 | [contributing.md](contributing.md)  | Operators + contributors | GitHub bug reports, external fixes, and GitLab-to-GitHub update flow |
+| [security-scans.md](security-scans.md) | Operator | Current Trivy review status and scanner review procedure |
+| [screenshots/README.md](screenshots/README.md) | Maintainer | Rules for adding sanitized UI screenshots to docs |
 | [troubleshoot.md](troubleshoot.md)  | Operator | When something looks wrong |
 | [architecture.md](architecture.md)  | Engineer | Component map, what talks to what, why |
 

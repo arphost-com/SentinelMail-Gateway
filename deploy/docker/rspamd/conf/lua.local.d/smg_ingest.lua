@@ -37,23 +37,10 @@ local MAX_RAW_MESSAGE_BYTES = 8 * 1024 * 1024
 local MAX_URLS             = 50
 local MAX_IMAGE_ATTACHMENTS = 5
 local MAX_IMAGE_SIZE       = 2 * 1024 * 1024
-local SUBJECT_TAG          = "Spam?"
-
 local function hex_hmac_sha256(key, body)
   local h = hmac.create_specific_keyed(key, "sha256")
   h:update(body)
   return h:hex()
-end
-
-local function tagged_subject(subject)
-  subject = tostring(subject or "")
-  if subject:match("^%s*[Ss][Pp][Aa][Mm]%?") then
-    return subject
-  end
-  if subject == "" then
-    return SUBJECT_TAG
-  end
-  return SUBJECT_TAG .. " " .. subject
 end
 
 local function gather_body(task)
@@ -290,8 +277,6 @@ local function post_mail_event(task, source)
     task:set_pre_result("reject", "message rejected by SentinelMail policy", "SentinelMail", 20.0, 1000)
   elseif accepted and accepted.disposition == "tagged" then
     task:insert_result("SMG_TAGGED", 0.0)
-    task:set_metric_subject(tagged_subject(task:get_subject()))
-    task:set_pre_result("rewrite subject", "message tagged by SentinelMail")
   end
   rspamd_logger.infox(task, "%s api accepted", source or "SMG_INGEST")
   return accepted

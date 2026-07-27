@@ -123,6 +123,19 @@ Production checklist:
 | Audit log | Security-relevant activity history. |
 | Settings | Personal settings, MFA, theme, system settings, and threat feeds. |
 
+## Screen References
+
+Approved screenshots should be captured from a populated, sanitized environment and stored under `docs/screenshots/`. Follow [screenshots/README.md](screenshots/README.md) before adding images here or to the in-app Docs page.
+
+Until a safe screenshot source is available, use these screen names when guiding customers:
+
+| Workflow | Screen to open | What to look for |
+| --- | --- | --- |
+| Check gateway health | Dashboard | Processed, delivered, quarantined, rejected, inbound, outbound, and confirmed-phishing counts. |
+| Add or disable a user | Users | Role, status, last activity, password reset, and disable controls. |
+| Investigate a held message | Quarantine | Details tabs with summary, content, headers, and raw metadata where available. |
+| Trace missing mail | Mail logs, then SMTP events | Mail-log disposition first; pre-ingest rejects, TLS failures, and downstream deferrals second. |
+
 ## Simple Safety Rules
 
 - If you do not recognize a sender or domain, do not release the message.

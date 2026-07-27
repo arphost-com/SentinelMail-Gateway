@@ -117,6 +117,7 @@ func (h *IngestHandler) handle(w http.ResponseWriter, r *http.Request) {
 	}
 
 	disposition, reason := decide(pol, &ev)
+	disposition, reason = applyDeliveryStatusNotificationDisposition(disposition, reason, &ev)
 	disposition, reason = applyAuthEnforcement(disposition, reason, &ev)
 	senderAction := ""
 	disposition, reason, senderAction, err = h.applySenderListDecision(r.Context(), disposition, reason, pol, orgID, domainID, &ev)
@@ -175,7 +176,7 @@ func (h *IngestHandler) handle(w http.ResponseWriter, r *http.Request) {
 		if challenge.IsPendingReason(reason) {
 			threatClass = "CHALLENGE_RESPONSE"
 		}
-		retentionDays := settings.QuarantineRetentionDays(r.Context(), h.DB, *orgID)
+		retentionDays := settings.MessageRetentionDaysForDomain(r.Context(), h.DB, *orgID, *domainID)
 		err = h.DB.QueryRow(r.Context(), `
 			INSERT INTO quarantine_entries
 			  (organization_id, mail_log_id, domain_id, from_addr, to_addr, subject,
@@ -249,6 +250,7 @@ func (h *IngestHandler) insertMailboxCopies(ctx context.Context, orgID, domainID
 	if len(body) > maxBodyForAI {
 		body = body[:maxBodyForAI]
 	}
+	retentionDays := settings.MessageRetentionDaysForDomain(ctx, h.DB, *orgID, *domainID)
 	for _, to := range ev.To {
 		to = strings.ToLower(strings.TrimSpace(to))
 		if to == "" {
@@ -257,10 +259,10 @@ func (h *IngestHandler) insertMailboxCopies(ctx context.Context, orgID, domainID
 		_, err := h.DB.Exec(ctx, `
 			INSERT INTO mailbox_messages
 			  (organization_id, domain_id, mail_log_id, from_addr, to_addr, subject, body_text,
-			   list_unsubscribe, list_unsubscribe_post, received_at)
-			VALUES ($1, $2, $3, NULLIF($4,''), $5, NULLIF($6,''), $7, NULLIF($8,''), NULLIF($9,''), now())
+			   list_unsubscribe, list_unsubscribe_post, expires_at, received_at)
+			VALUES ($1, $2, $3, NULLIF($4,''), $5, NULLIF($6,''), $7, NULLIF($8,''), NULLIF($9,''), now() + ($10::int * interval '1 day'), now())
 			ON CONFLICT (mail_log_id, to_addr) DO NOTHING
-		`, orgID, domainID, mailLogID, ev.From, to, ev.Subject, body, ev.ListUnsubscribe, ev.ListUnsubscribePost)
+		`, orgID, domainID, mailLogID, ev.From, to, ev.Subject, body, ev.ListUnsubscribe, ev.ListUnsubscribePost, retentionDays)
 		if err != nil {
 			return err
 		}
@@ -472,6 +474,16 @@ func dispositionForPolicyAction(action string) string {
 	}
 }
 
+func applyDeliveryStatusNotificationDisposition(disposition, reason string, ev *Event) (string, string) {
+	if !isDeliveryStatusNotification(ev) {
+		return disposition, reason
+	}
+	if reason == "" || strings.HasPrefix(reason, "score >=") {
+		return "delivered", "delivery status notification"
+	}
+	return disposition, reason
+}
+
 func hasSymbol(ev *Event, name string) bool {
 	if ev == nil {
 		return false
@@ -598,6 +610,9 @@ func applyAuthEnforcement(disposition, reason string, ev *Event) (string, string
 	if ev != nil && strings.EqualFold(ev.Direction, "outbound") {
 		return disposition, reason
 	}
+	if isDeliveryStatusNotification(ev) {
+		return disposition, reason
+	}
 	if !hasAuthSignal(ev) {
 		return "quarantined", "sender authentication results missing"
 	}
@@ -707,10 +722,123 @@ func applyChallengeResponseHold(disposition, reason string, pol *policies.Policy
 	if ev == nil || !strings.EqualFold(ev.Direction, "inbound") {
 		return disposition, reason
 	}
+	if isDeliveryStatusNotification(ev) {
+		return disposition, reason
+	}
 	if senderAction == "allow" {
 		return disposition, reason
 	}
 	return "quarantined", challenge.ReasonPendingApproval
+}
+
+func isDeliveryStatusNotification(ev *Event) bool {
+	if ev == nil || strings.EqualFold(ev.Direction, "outbound") {
+		return false
+	}
+	from := strings.ToLower(strings.TrimSpace(ev.From))
+	hasNullEnvelope := from == "" || from == "<>"
+	fromLooksSystem := strings.HasPrefix(from, "mailer-daemon@") || strings.HasPrefix(from, "postmaster@")
+	subjectLooksDSN := looksLikeDSNSubject(ev.Subject)
+	symbolLooksDSN := hasDeliveryStatusNotificationSymbol(ev)
+	rawLooksDSN := rawMessageLooksDSN(ev.RawMessageB64)
+	if symbolLooksDSN && (hasNullEnvelope || fromLooksSystem || subjectLooksDSN) {
+		return true
+	}
+	if rawLooksDSN && (hasNullEnvelope || fromLooksSystem || subjectLooksDSN) {
+		return true
+	}
+	return hasNullEnvelope && subjectLooksDSN
+}
+
+func hasDeliveryStatusNotificationSymbol(ev *Event) bool {
+	for key, value := range ev.Symbols {
+		if !strings.EqualFold(key, "BOUNCE") {
+			continue
+		}
+		if symbolHasOption(value, "DSN") {
+			return true
+		}
+		return true
+	}
+	return false
+}
+
+func symbolHasOption(value any, want string) bool {
+	want = strings.ToUpper(strings.TrimSpace(want))
+	if want == "" {
+		return false
+	}
+	obj, ok := value.(map[string]any)
+	if !ok {
+		return false
+	}
+	options, ok := obj["options"]
+	if !ok {
+		return false
+	}
+	switch vals := options.(type) {
+	case []any:
+		for _, value := range vals {
+			if strings.EqualFold(strings.TrimSpace(toString(value)), want) {
+				return true
+			}
+		}
+	case []string:
+		for _, value := range vals {
+			if strings.EqualFold(strings.TrimSpace(value), want) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func toString(value any) string {
+	switch v := value.(type) {
+	case string:
+		return v
+	default:
+		return ""
+	}
+}
+
+func looksLikeDSNSubject(subject string) bool {
+	subject = strings.ToLower(strings.TrimSpace(subject))
+	switch {
+	case strings.Contains(subject, "delivery status notification"),
+		strings.Contains(subject, "undelivered mail returned"),
+		strings.Contains(subject, "undeliverable:"),
+		strings.Contains(subject, "mail delivery failed"),
+		strings.Contains(subject, "returned mail"),
+		strings.Contains(subject, "failure notice"):
+		return true
+	default:
+		return false
+	}
+}
+
+func rawMessageLooksDSN(rawB64 string) bool {
+	rawB64 = strings.TrimSpace(rawB64)
+	if rawB64 == "" {
+		return false
+	}
+	raw, err := base64.StdEncoding.DecodeString(rawB64)
+	if err != nil || len(raw) == 0 {
+		return false
+	}
+	if len(raw) > 64*1024 {
+		raw = raw[:64*1024]
+	}
+	s := strings.ToLower(string(raw))
+	switch {
+	case strings.Contains(s, "report-type=delivery-status"),
+		strings.Contains(s, "message/delivery-status"),
+		strings.Contains(s, "auto-submitted: auto-generated"),
+		strings.Contains(s, "auto-submitted: auto-replied"):
+		return true
+	default:
+		return false
+	}
 }
 
 func authSignals(ev *Event) classifier.AuthSignals {
@@ -790,7 +918,11 @@ func hasReputationAllowlistHit(ev *Event) bool {
 		return false
 	}
 	for key := range ev.Symbols {
-		if isReputationAllowSymbol(strings.ToUpper(key)) {
+		s := strings.ToUpper(key)
+		if isReputationLookupFailureSymbol(s) {
+			continue
+		}
+		if isReputationAllowSymbol(s) {
 			return true
 		}
 	}
@@ -1112,9 +1244,9 @@ func scoreBrandClaim(ev *Event, fromDomain string, profile protectedBrandProfile
 		analysis.Score += 80
 		analysis.Signals = append(analysis.Signals, "display name claims "+profile.name)
 	}
-	if opts.SubjectEnabled && containsAny(subject, profile.terms) && containsAny(combined, profile.cues) {
+	if opts.SubjectEnabled && containsAny(combined, profile.terms) && containsAny(combined, profile.cues) {
 		analysis.Score += 45
-		analysis.Signals = append(analysis.Signals, "subject or body claims "+profile.name+" with sensitive context")
+		analysis.Signals = append(analysis.Signals, "message claims "+profile.name+" with sensitive context")
 	}
 	if opts.LinkMismatchEnabled && containsAny(combined, profile.terms) {
 		if host := firstMismatchedURLHost(ev, fromDomain, profile); host != "" {

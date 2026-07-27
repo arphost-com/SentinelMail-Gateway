@@ -293,7 +293,7 @@ export function MailLogsPage() {
               size="sm"
               variant="secondary"
               disabled={!detail.client_ip || runAction.isPending}
-              onClick={() => confirmDanger("Send a source IP abuse report for this mail log?") && runAction.mutate({ id: detail.id, action: "source-ip-report" })}
+              onClick={() => confirmDanger("Only continue if this message is unsolicited or abusive. Send a spam complaint with the original message and full headers?") && runAction.mutate({ id: detail.id, action: "source-ip-report", body: { verdict: "spam" } })}
             >
               Report source IP
             </Button>

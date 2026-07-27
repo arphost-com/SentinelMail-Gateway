@@ -35,8 +35,9 @@
 - [x] Review and demote/remove existing scanner phishing reports created by the old sandbox tracking-link heuristic if they are not true phishing.
 - [x] Suppress deferred queue noise for known spam/backscatter domains by hiding deferred/bounced/failed SMTP events tied to blocklisted senders by default, with an operator toggle to show them.
 - [x] Add a downloadable customer-facing quick-start PDF for onsite installs and MSP-hosted customer onboarding.
+- [x] Review fresh Trivy artifacts after the Debian/Ubuntu/Alpine security refresh; latest `main` pipeline `1623` reported zero HIGH/CRITICAL repo or image findings.
+- [x] Replace the screenshot TODO with a sanitized screenshot capture guide and wire screen-reference guidance into `docs/role-guides.md` and the in-app Docs page.
 
 ## Open
 
-- [ ] Review vendor-unfixed Trivy OS package findings after the next Debian/Ubuntu/Alpine security refresh and fresh CI scanner artifacts are available.
-- [ ] Add screenshots to `docs/role-guides.md` and the in-app Docs page after a populated UI environment is available for stable Users/Dashboard captures.
+None.

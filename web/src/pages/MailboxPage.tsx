@@ -27,6 +27,7 @@ interface MailboxMessage {
   spoof_signals?: string[];
   unsubscribe?: UnsubscribeInfo;
   verdict_at?: string;
+  expires_at?: string;
   received_at: string;
 }
 
@@ -163,8 +164,8 @@ export function MailboxPage() {
   });
 
   const mailLogAction = useMutation({
-    mutationFn: ({ mailLogID, action }: { mailLogID: string; action: string }) =>
-      api.post<MailLogActionResponse>(`/mail-logs/${mailLogID}/${action}`, {}),
+    mutationFn: ({ mailLogID, action, verdict }: { mailLogID: string; action: string; verdict?: string }) =>
+      api.post<MailLogActionResponse>(`/mail-logs/${mailLogID}/${action}`, verdict ? { verdict } : {}),
     onSuccess: (result) => {
       setMailLogActionResult(result);
       qc.invalidateQueries({ queryKey: ["mailbox"] });
@@ -434,6 +435,8 @@ export function MailboxPage() {
                 <dl className="grid grid-cols-3 gap-2 text-sm">
                   <dt className="text-subtle">Received</dt>
                   <dd className="col-span-2">{new Date(detail.received_at).toLocaleString()}</dd>
+                  <dt className="text-subtle">Expires</dt>
+                  <dd className="col-span-2">{detail.expires_at ? new Date(detail.expires_at).toLocaleString() : "—"}</dd>
                   <dt className="text-subtle">From</dt>
                   <dd className="col-span-2 break-all">{detail.from_addr ?? "—"}</dd>
                   <dt className="text-subtle">To</dt>
@@ -478,11 +481,14 @@ export function MailboxPage() {
               <Button
                 size="sm"
                 variant="secondary"
-                disabled={mailLogAction.isPending}
-                onClick={() => confirmDanger("Send a source IP abuse report for this inbox message?") && mailLogAction.mutate({ mailLogID: detail.mail_log_id, action: "source-ip-report" })}
+                disabled={mailLogAction.isPending || !["spam", "phishing", "malware"].includes(detail.verdict)}
+                onClick={() => confirmDanger("Send this confirmed abusive message, including its full headers, to the source network's abuse contact?") && mailLogAction.mutate({ mailLogID: detail.mail_log_id, action: "source-ip-report", verdict: detail.verdict })}
               >
                 Report source IP
               </Button>
+              {!["spam", "phishing", "malware"].includes(detail.verdict) && (
+                <HelpTooltip text="Mark the message as spam, phishing, or malware before sending an external abuse complaint." />
+              )}
               <Button
                 size="sm"
                 variant="secondary"

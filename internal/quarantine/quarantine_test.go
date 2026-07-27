@@ -194,7 +194,7 @@ func TestLookupRDAPContinuesWhenRegistryHasNoAbuseContact(t *testing.T) {
 	}
 }
 
-func TestBuildAbuseReportBodySummarizesEvidenceAttachment(t *testing.T) {
+func TestBuildAbuseReportBodyRedactsSpamContentAndExplainsConcern(t *testing.T) {
 	from := "phish@example.net"
 	subject := "Click https://credential.example/login"
 	threat := "PHISHING"
@@ -210,7 +210,10 @@ func TestBuildAbuseReportBodySummarizesEvidenceAttachment(t *testing.T) {
 	if strings.Contains(body, "https://credential.example/login") {
 		t.Fatalf("report body included phishing URL: %q", body)
 	}
-	for _, want := range []string{"Source IP: 203.0.113.5", "SMTP sender: phish@example.net", "message/rfc822 evidence attachment"} {
+	if strings.Contains(body, subject) {
+		t.Fatalf("report body included raw spam subject: %q", body)
+	}
+	for _, want := range []string{"Source IP: 203.0.113.5", "SMTP sender: phish@example.net", "Original subject: [redacted;", "Concern: The recipient reports", "original message is attached as message/rfc822"} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("report body missing %q: %q", want, body)
 		}
@@ -273,7 +276,7 @@ func TestBuildAbuseReportMessageAttachesOriginalMessage(t *testing.T) {
 		ToAddr:     "victim@example.com",
 		ReceivedAt: time.Date(2026, 6, 3, 12, 0, 0, 0, time.UTC),
 	}
-	original := []byte("From: phish@example.net\r\nSubject: Evidence\r\n\r\nbody")
+	original := "From: phish@example.net\r\nSubject: Evidence\r\n\r\nbody"
 	raw := string(buildAbuseReportMessage(
 		"SentinelMail <no-reply@example.com>",
 		[]string{"abuse@example.net"},
@@ -281,15 +284,14 @@ func TestBuildAbuseReportMessageAttachesOriginalMessage(t *testing.T) {
 		"Report body",
 		entry,
 		&SourceIPReport{IP: "203.0.113.5"},
-		original,
-		true,
+		[]byte(original),
 	))
 	for _, want := range []string{
 		"Content-Type: multipart/report;",
 		"Content-Type: message/feedback-report",
 		"Content-Type: message/rfc822",
 		"Content-Disposition: attachment; filename=\"original-message.eml\"",
-		"From: phish@example.net\r\nSubject: Evidence",
+		original,
 		"Feedback-Type: abuse",
 		"Source-IP: 203.0.113.5",
 	} {
@@ -299,40 +301,20 @@ func TestBuildAbuseReportMessageAttachesOriginalMessage(t *testing.T) {
 	}
 }
 
-func TestBuildAbuseReportMessageAttachesSynthesizedEvidence(t *testing.T) {
-	from := "phish@example.net"
-	subject := "Evidence unavailable"
-	sourceIP := "203.0.113.9"
-	threat := "PHISHING"
-	entry := &Entry{
-		ID:          uuid.New(),
-		FromAddr:    &from,
-		ToAddr:      "victim@example.com",
-		Subject:     &subject,
-		ClientIP:    &sourceIP,
-		ReceivedAt:  time.Date(2026, 6, 3, 12, 0, 0, 0, time.UTC),
-		ThreatClass: &threat,
+func TestAbuseReportConcernRejectsCleanMail(t *testing.T) {
+	for _, threat := range []string{"Clean or wanted mail", "NOT_SPAM", "User confirmed clean", ""} {
+		entry := &Entry{ThreatClass: &threat}
+		if _, _, ok := abuseReportConcern(entry); ok {
+			t.Fatalf("abuseReportConcern(%q) unexpectedly allowed clean or unclassified mail", threat)
+		}
 	}
-	evidence := synthesizedEvidenceMessage(entry)
-	raw := string(buildAbuseReportMessage(
-		"SentinelMail <no-reply@example.com>",
-		[]string{"abuse@example.net"},
-		"Phishing email from 203.0.113.9",
-		"Report body",
-		entry,
-		&SourceIPReport{IP: "203.0.113.9"},
-		evidence,
-		false,
-	))
-	for _, want := range []string{
-		"Content-Type: message/rfc822",
-		"Content-Disposition: attachment; filename=\"sentinelmail-evidence.eml\"",
-		"X-SentinelMail-Evidence-ID: " + entry.ID.String(),
-		"X-SentinelMail-Source-IP: 203.0.113.9",
-		"original raw message was not available",
-	} {
-		if !strings.Contains(raw, want) {
-			t.Fatalf("abuse report missing %q:\n%s", want, raw)
+}
+
+func TestAbuseReportConcernAllowsExplicitAbuseVerdicts(t *testing.T) {
+	for _, threat := range []string{"SPAM", "PHISHING", "MALWARE", "VIRUS", "OTHER", "User reported spam"} {
+		entry := &Entry{ThreatClass: &threat}
+		if _, _, ok := abuseReportConcern(entry); !ok {
+			t.Fatalf("abuseReportConcern(%q) rejected an explicit abuse verdict", threat)
 		}
 	}
 }

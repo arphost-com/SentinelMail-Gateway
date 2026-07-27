@@ -6,7 +6,7 @@ This same install model works for customer onsite deployments and direct interne
 
 SentinelMail Gateway must run on a VPS, dedicated server, or equivalent host where you control Docker, firewall rules, public ports 25/80/443, persistent volumes, and the server's mail identity. It is not a shared-hosting application. That requirement is intentional and security-relevant: the gateway is an internet-facing MTA, needs to bind privileged SMTP ports, persist Postfix/Rspamd/Postgres state, enforce tenant isolation in its own services, and terminate TLS for the admin UI. Shared hosting normally hides or multiplexes those controls, which would make mail routing, queue ownership, TLS, and audit boundaries ambiguous.
 
-CI security scans run on docker02 before deploy. Trivy is configured to fail on HIGH/CRITICAL repo or image findings when a fixed package exists, and to keep vendor-unfixed OS package findings in the JSON artifacts instead of blocking deploy. This keeps the gate actionable: the images run package upgrades during build, and distro maintainers remain the secure source for libc, Postfix, Rspamd, browser-runtime, and other OS package fixes.
+CI security scans run on docker02 before deploy. Trivy is configured to fail on HIGH/CRITICAL repo or image findings when a fixed package exists, and to omit vendor-unfixed OS package findings from the gate artifacts until upstream publishes a fixed version. This keeps the gate actionable: the images run package upgrades during build, and distro maintainers remain the secure source for libc, Postfix, Rspamd, browser-runtime, and other OS package fixes.
 
 If you've never deployed this before, follow **First Time Setup** below in order — do not skip steps. The optional CI-based deploy is at the bottom.
 
@@ -361,7 +361,7 @@ Configure a masked/protected GitLab CI/CD variable named `GITHUB_PAT` with GitHu
 
 **GitLab -> project -> CI/CD -> Pipelines -> latest `main` pipeline -> `push:github`.**
 
-The job pushes the checked GitLab commit to `https://github.com/arphost-com/SentinelMail-Gateway` as `main` and verifies GitHub's `main` SHA matches the GitLab commit. It is manual by design, so public releases happen only when an operator chooses to publish them.
+The job publishes a filtered public tree to `https://github.com/arphost-com/SentinelMail-Gateway`, excludes GitLab CI/CD files, and verifies the public commit. It is manual by design, so public releases happen only when an operator chooses to publish them.
 
 ---
 

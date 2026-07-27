@@ -11,7 +11,7 @@ RUN npm run build
 # ---------- runtime ----------
 FROM nginx:1.29-alpine
 RUN apk upgrade --no-cache && \
-    apk add --no-cache --upgrade libxml2 'c-ares>=1.34.8-r0' 'libexpat>=2.8.2-r0' && \
+    apk add --no-cache --upgrade libxml2 'c-ares>=1.34.8-r0' 'curl>=8.20.0-r0' 'libcurl>=8.20.0-r0' 'libexpat>=2.8.2-r0' && \
     addgroup -g 10002 -S sentinelweb && \
     adduser -u 10002 -S -G sentinelweb sentinelweb && \
     mkdir -p /var/cache/nginx /var/run /usr/share/nginx/html && \

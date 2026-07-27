@@ -93,6 +93,7 @@ var DefaultOrgKeys = []SettingMeta{
 type Setting struct {
 	Key       string          `json:"key"`
 	Value     json.RawMessage `json:"value"`
+	Inherited bool            `json:"inherited,omitempty"`
 	UpdatedBy *uuid.UUID      `json:"updated_by,omitempty"`
 	UpdatedAt time.Time       `json:"updated_at"`
 }
@@ -290,6 +291,27 @@ func MessageRetentionDays(ctx context.Context, db rowQuerier, orgID uuid.UUID) i
 	if err == nil {
 		days = value
 	}
+	return clampRetentionDays(days)
+}
+
+// MessageRetentionDaysForDomain returns the domain override when present,
+// otherwise the organization/system value used by MessageRetentionDays.
+func MessageRetentionDaysForDomain(ctx context.Context, db rowQuerier, orgID, domainID uuid.UUID) int {
+	var value int
+	err := db.QueryRow(ctx, `
+		SELECT retention_days
+		  FROM domains
+		 WHERE id = $1
+		   AND organization_id = $2
+		   AND retention_days IS NOT NULL
+	`, domainID, orgID).Scan(&value)
+	if err == nil {
+		return clampRetentionDays(value)
+	}
+	return MessageRetentionDays(ctx, db, orgID)
+}
+
+func clampRetentionDays(days int) int {
 	if days < retentionMinDays {
 		return retentionMinDays
 	}

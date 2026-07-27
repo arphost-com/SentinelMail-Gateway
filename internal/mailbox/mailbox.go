@@ -54,6 +54,7 @@ type Message struct {
 	Unsubscribe    *UnsubscribeInfo `json:"unsubscribe,omitempty"`
 	VerdictBy      *uuid.UUID       `json:"verdict_by,omitempty"`
 	VerdictAt      *time.Time       `json:"verdict_at,omitempty"`
+	ExpiresAt      *time.Time       `json:"expires_at,omitempty"`
 	ReceivedAt     time.Time        `json:"received_at"`
 
 	mailLogReason       *string
@@ -80,7 +81,7 @@ type UnsubscribeOption struct {
 }
 
 const cols = `id, organization_id, domain_id, mail_log_id, from_addr, to_addr,
-              subject, body_text, verdict, verdict_by, verdict_at, received_at,
+              subject, body_text, verdict, verdict_by, verdict_at, expires_at, received_at,
               (SELECT reason FROM mail_logs ml WHERE ml.id = mailbox_messages.mail_log_id),
               COALESCE((SELECT symbols FROM mail_logs ml WHERE ml.id = mailbox_messages.mail_log_id), '{}'::jsonb),
               list_unsubscribe, list_unsubscribe_post`
@@ -107,10 +108,10 @@ func (h *Handler) list(w http.ResponseWriter, r *http.Request) {
 	}
 	page := httpx.ParsePage(r)
 	recipient := strings.ToLower(strings.TrimSpace(ident.Email))
-	where := "WHERE organization_id = ANY($1) AND lower(to_addr) = $2 AND " + notHeldQuarantineClause("mailbox_messages")
+	where := "WHERE organization_id = ANY($1) AND lower(to_addr) = $2 AND " + visibleMailboxClause("mailbox_messages")
 	args := []any{scope.VisibleOrgIDs, recipient}
 	if scope.IsSuperAdmin {
-		where = "WHERE lower(to_addr) = $1 AND " + notHeldQuarantineClause("mailbox_messages")
+		where = "WHERE lower(to_addr) = $1 AND " + visibleMailboxClause("mailbox_messages")
 		args = []any{recipient}
 	}
 	if verdict := strings.TrimSpace(r.URL.Query().Get("verdict")); verdict != "" {
@@ -671,7 +672,7 @@ func (h *Handler) messageForUser(w http.ResponseWriter, r *http.Request) (Messag
 		return Message{}, nil, false
 	}
 	var msg Message
-	if err := scan(h.DB.QueryRow(r.Context(), `SELECT `+cols+` FROM mailbox_messages WHERE id = $1 AND `+notHeldQuarantineClause("mailbox_messages"), id), &msg); err != nil {
+	if err := scan(h.DB.QueryRow(r.Context(), `SELECT `+cols+` FROM mailbox_messages WHERE id = $1 AND `+visibleMailboxClause("mailbox_messages"), id), &msg); err != nil {
 		httpx.WriteError(w, http.StatusNotFound, "not found")
 		return Message{}, nil, false
 	}
@@ -683,7 +684,7 @@ func (h *Handler) messageForUser(w http.ResponseWriter, r *http.Request) (Messag
 }
 
 func (h *Handler) messagesForUser(ctx context.Context, scope *tenant.Scope, ident *auth.Identity, ids []uuid.UUID) ([]Message, error) {
-	rows, err := h.DB.Query(ctx, `SELECT `+cols+` FROM mailbox_messages WHERE id = ANY($1) AND `+notHeldQuarantineClause("mailbox_messages"), ids)
+	rows, err := h.DB.Query(ctx, `SELECT `+cols+` FROM mailbox_messages WHERE id = ANY($1) AND `+visibleMailboxClause("mailbox_messages"), ids)
 	if err != nil {
 		return nil, err
 	}
@@ -711,6 +712,14 @@ func notHeldQuarantineClause(alias string) string {
 		   AND lower(qe.to_addr) = lower(` + alias + `.to_addr)
 		   AND qe.state = 'held'
 	)`
+}
+
+func notExpiredClause(alias string) string {
+	return `(` + alias + `.expires_at IS NULL OR ` + alias + `.expires_at > now())`
+}
+
+func visibleMailboxClause(alias string) string {
+	return notHeldQuarantineClause(alias) + ` AND ` + notExpiredClause(alias)
 }
 
 func validVerdict(v string) bool {
@@ -756,7 +765,7 @@ func domainPart(value string) string {
 func scan(row pgx.Row, msg *Message) error {
 	err := row.Scan(&msg.ID, &msg.OrganizationID, &msg.DomainID, &msg.MailLogID,
 		&msg.FromAddr, &msg.ToAddr, &msg.Subject, &msg.BodyText, &msg.Verdict,
-		&msg.VerdictBy, &msg.VerdictAt, &msg.ReceivedAt, &msg.mailLogReason,
+		&msg.VerdictBy, &msg.VerdictAt, &msg.ExpiresAt, &msg.ReceivedAt, &msg.mailLogReason,
 		&msg.mailLogSymbols, &msg.listUnsubscribe, &msg.listUnsubscribePost)
 	applyAnalysis(msg)
 	return err

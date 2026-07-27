@@ -6,6 +6,7 @@ RUN apk add --no-cache git
 WORKDIR /src/caddy
 RUN git clone --depth 1 --branch "${CADDY_VERSION}" https://github.com/caddyserver/caddy.git . && \
     go mod edit -require github.com/go-jose/go-jose/v3@v3.0.5 && \
+    go mod edit -require google.golang.org/grpc@v1.82.1 && \
     go mod tidy && \
     CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/caddy ./cmd/caddy
 

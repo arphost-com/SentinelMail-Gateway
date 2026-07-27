@@ -291,7 +291,8 @@ func (h *Handler) read(w http.ResponseWriter, r *http.Request) {
 }
 
 type actionReq struct {
-	Match string `json:"match,omitempty"`
+	Match   string `json:"match,omitempty"`
+	Verdict string `json:"verdict,omitempty"`
 }
 
 type actionResp struct {
@@ -314,11 +315,28 @@ func (h *Handler) reportSourceIP(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	var req actionReq
+	if err := httpx.DecodeJSON(r, w, &req); err != nil {
+		httpx.WriteError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	verdict := strings.ToLower(strings.TrimSpace(req.Verdict))
+	if verdict == "" {
+		verdict = "spam"
+	}
+	switch verdict {
+	case "spam", "phishing", "malware", "other":
+	default:
+		httpx.WriteError(w, http.StatusBadRequest, "verdict must be spam, phishing, malware, or other")
+		return
+	}
 	recipient := ""
 	if ident.Role == "org_user" {
 		recipient = ident.Email
 	}
 	entry := quarantineEntryFromLog(log, recipient)
+	threatClass := strings.ToUpper(verdict)
+	entry.ThreatClass = &threatClass
 	report, err := quarantine.SendSourceIPReportForEntry(r.Context(), h.DB, entry)
 	if err != nil {
 		httpx.WriteError(w, http.StatusConflict, err.Error())
@@ -331,7 +349,7 @@ func (h *Handler) reportSourceIP(w http.ResponseWriter, r *http.Request) {
 		Action:         "mail_logs.report_source_ip",
 		TargetKind:     "mail_log",
 		TargetID:       log.ID.String(),
-		Detail:         map[string]any{"source_ip": report.IP, "sent_to": report.SentTo},
+		Detail:         map[string]any{"source_ip": report.IP, "sent_to": report.SentTo, "verdict": verdict},
 	})
 	httpx.WriteJSON(w, http.StatusOK, actionResp{
 		Message:  "Source IP report sent.",

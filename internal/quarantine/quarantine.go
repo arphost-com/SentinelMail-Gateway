@@ -4,6 +4,8 @@ package quarantine
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -908,8 +910,9 @@ func (h *Handler) gatewayForNotification(ctx context.Context, orgID uuid.UUID, r
 }
 
 type purgeExpiredResp struct {
-	PurgedEntries int64 `json:"purged_entries"`
-	PurgedBlobs   int64 `json:"purged_blobs"`
+	PurgedEntries         int64 `json:"purged_entries"`
+	PurgedBlobs           int64 `json:"purged_blobs"`
+	PurgedMailboxMessages int64 `json:"purged_mailbox_messages"`
 }
 
 func (h *Handler) purgeExpired(w http.ResponseWriter, r *http.Request) {
@@ -944,10 +947,18 @@ func (h *Handler) purgeExpired(w http.ResponseWriter, r *http.Request) {
 			DELETE FROM quarantine_entries
 			 WHERE id IN (SELECT id FROM candidates)
 			RETURNING 1
+		),
+		deleted_mailbox_messages AS (
+			DELETE FROM mailbox_messages
+			 WHERE expires_at IS NOT NULL
+			   AND expires_at <= now()
+			   AND ($1::boolean OR organization_id = ANY($2::uuid[]))
+			RETURNING 1
 		)
 		SELECT (SELECT count(*) FROM deleted_entries)::bigint,
-		       (SELECT count(*) FROM deleted_blobs)::bigint
-	`, scope.IsSuperAdmin, visible).Scan(&resp.PurgedEntries, &resp.PurgedBlobs); err != nil {
+		       (SELECT count(*) FROM deleted_blobs)::bigint,
+		       (SELECT count(*) FROM deleted_mailbox_messages)::bigint
+	`, scope.IsSuperAdmin, visible).Scan(&resp.PurgedEntries, &resp.PurgedBlobs, &resp.PurgedMailboxMessages); err != nil {
 		httpx.WriteError(w, http.StatusInternalServerError, "purge failed")
 		return
 	}
@@ -957,7 +968,7 @@ func (h *Handler) purgeExpired(w http.ResponseWriter, r *http.Request) {
 		ActorIP:        audit.FromRequest(r, "quarantine.purge_expired").ActorIP,
 		Action:         "quarantine.purge_expired",
 		TargetKind:     "quarantine",
-		Detail:         map[string]any{"purged_entries": resp.PurgedEntries, "purged_blobs": resp.PurgedBlobs},
+		Detail:         map[string]any{"purged_entries": resp.PurgedEntries, "purged_blobs": resp.PurgedBlobs, "purged_mailbox_messages": resp.PurgedMailboxMessages},
 	})
 	httpx.WriteJSON(w, http.StatusOK, resp)
 }
@@ -1665,6 +1676,9 @@ func (h *Handler) readAllowedEntryWithIdentity(w http.ResponseWriter, r *http.Re
 }
 
 func (h *Handler) buildSourceIPReport(ctx context.Context, e *Entry) (*SourceIPReport, error) {
+	if _, _, ok := abuseReportConcern(e); !ok {
+		return nil, fmt.Errorf("only confirmed spam, phishing, malware, or other abusive email can be reported; mark the message with an abuse verdict before reporting it")
+	}
 	if e.ClientIP == nil || strings.TrimSpace(*e.ClientIP) == "" {
 		return nil, fmt.Errorf("no source IP was recorded for this message")
 	}
@@ -1694,6 +1708,10 @@ func (h *Handler) buildSourceIPReport(ctx context.Context, e *Entry) (*SourceIPR
 	if isWorldstreamAbuseProvider(rdap) {
 		report.SubmissionMode = "webform"
 		report.Webform = h.worldstreamAbuseWebform(ctx, e, report)
+		if !h.hasOriginalReportEvidence(ctx, e) {
+			report.Warning = "Worldstream requires the original message evidence, but the message with full headers is no longer stored."
+			return report, nil
+		}
 		report.Warning = "Worldstream requires abuse complaints through its webform; email reports to their abuse mailbox are not processed."
 		return report, nil
 	}
@@ -1707,8 +1725,8 @@ func (h *Handler) buildSourceIPReport(ctx context.Context, e *Entry) (*SourceIPR
 		report.Warning = "No outbound relay is configured."
 		return report, nil
 	}
-	if !h.hasReportEvidence(ctx, e) {
-		report.Warning = "No message evidence is available for this quarantine entry, so an abuse report cannot be sent."
+	if !h.hasOriginalReportEvidence(ctx, e) {
+		report.Warning = "The original message with full headers is not stored, so a provider-compliant abuse report cannot be sent."
 		return report, nil
 	}
 	report.CanSend = true
@@ -1929,27 +1947,55 @@ func buildAbuseReportBody(e *Entry, report *SourceIPReport) string {
 	if e.ThreatClass != nil {
 		threat = *e.ThreatClass
 	}
-	threatLabel := quarantineThreatLabel(e)
+	threatLabel, concern, _ := abuseReportConcern(e)
 	lines := []string{
 		"Hello,",
 		"",
-		"SentinelMail Gateway quarantined a " + threatLabel + " email from an IP address registered to your network.",
+		"SentinelMail Gateway received a " + threatLabel + " email from an IP address registered to your network.",
+		"Concern: " + concern,
 		"",
 		"Source IP: " + report.IP,
 		"Network: " + emptyDash(report.NetworkName),
 		"SMTP sender: " + emptyDash(safeReportValue(from)),
 		"Recipient: " + emptyDash(safeReportValue(e.ToAddr)),
-		"Subject: " + emptyDash(safeReportValue(subject)),
+		"Original subject: " + safeReportSubject(subject),
 		"Threat class: " + emptyDash(safeReportValue(threat)),
 		"Received at: " + e.ReceivedAt.UTC().Format(time.RFC3339),
 		"SentinelMail evidence ID: " + e.ID.String(),
 		"",
-		"A message/rfc822 evidence attachment is included so your abuse team can review the original message when stored, or SentinelMail's captured quarantine evidence when the original raw message is unavailable.",
+		"The original message is attached as message/rfc822 and includes the complete headers needed to verify its Amazon SES or other provider routing.",
+		"No URLs or message body content are repeated in this explanatory text.",
 		"Please investigate the source host and take appropriate action.",
 		"",
 		"SentinelMail Gateway",
 	}
 	return strings.Join(lines, "\r\n")
+}
+
+func abuseReportConcern(e *Entry) (label, concern string, ok bool) {
+	if e == nil {
+		return "", "", false
+	}
+	value := ""
+	if e.ThreatClass != nil {
+		value = *e.ThreatClass
+	}
+	if strings.TrimSpace(value) == "" {
+		value = e.EmailType
+	}
+	normalized := strings.ToUpper(strings.TrimSpace(value))
+	switch {
+	case normalized == "SPAM" || strings.Contains(normalized, "REPORTED SPAM"):
+		return "spam", "The recipient reports that this unsolicited message was not requested or consented to.", true
+	case normalized == "PHISHING" || strings.Contains(normalized, "REPORTED PHISHING"):
+		return "phishing", "The recipient reports that this message attempts to deceive them or obtain sensitive information.", true
+	case normalized == "MALWARE" || normalized == "VIRUS" || strings.Contains(normalized, "REPORTED MALWARE"):
+		return "malware", "The recipient reports that this message contains or attempts to deliver malicious content.", true
+	case normalized == "OTHER":
+		return "suspicious", "The recipient reports this message as abusive and did not request or consent to it.", true
+	default:
+		return "", "", false
+	}
 }
 
 const worldstreamAbuseFormURL = "https://www.worldstream.com/en/abuse/abuse-form/"
@@ -1987,7 +2033,7 @@ func (h *Handler) worldstreamAbuseWebform(ctx context.Context, e *Entry, report 
 		ReportedIP:           report.IP,
 		DateOfIncident:       e.ReceivedAt.UTC().Format("2006-01-02"),
 		AdditionalInfo:       buildWorldstreamAdditionalInfo(e, report),
-		AttachmentNote:       "Attach the original-message.eml or sentinelmail-evidence.eml evidence from this quarantine entry when the form asks for a file.",
+		AttachmentNote:       "Attach the stored original-message.eml from this quarantine entry; it contains the complete message headers.",
 		ContactName:          contactName,
 		ContactEmail:         from.Address,
 		CompanyName:          strings.TrimSpace(company),
@@ -2006,15 +2052,15 @@ func buildWorldstreamAdditionalInfo(e *Entry, report *SourceIPReport) string {
 		"Form evidence checklist:",
 		"- IP address of reported content: " + report.IP,
 		"- Date of incident: " + e.ReceivedAt.UTC().Format(time.RFC3339),
-		"- Evidence attachment: original-message.eml if available; otherwise sentinelmail-evidence.eml.",
+		"- Evidence attachment: the stored original-message.eml with complete headers.",
 	}
 	return strings.Join(lines, "\r\n")
 }
 
 func reportSubjectForThreat(e *Entry, ip string) string {
-	label := quarantineThreatLabel(e)
-	if label == "" {
-		label = "phishing"
+	label, _, ok := abuseReportConcern(e)
+	if !ok {
+		label = "abusive"
 	}
 	return strings.ToUpper(label[:1]) + label[1:] + " email from " + ip
 }
@@ -2026,11 +2072,11 @@ func (h *Handler) sendAbuseReport(ctx context.Context, e *Entry, report *SourceI
 		return fmt.Errorf("no outbound relay configured")
 	}
 	from := reportFrom(ctx, h.DB, e.OrganizationID)
-	evidence, original, err := h.reportEvidenceBytes(ctx, e)
+	evidence, err := h.originalReportEvidence(ctx, e)
 	if err != nil {
 		return err
 	}
-	raw := buildAbuseReportMessage(from.String(), report.AbuseContacts, report.ReportSubject, report.ReportBody, e, report, evidence, original)
+	raw := buildAbuseReportMessage(from.String(), report.AbuseContacts, report.ReportSubject, report.ReportBody, e, report, evidence)
 	relayPort, _ := strconv.Atoi(strings.TrimSpace(port))
 	quarantineEntryID := h.sentEmailQuarantineEntryID(ctx, e)
 	return sentemails.Send(ctx, h.DB, sentemails.Record{
@@ -2045,19 +2091,15 @@ func (h *Handler) sendAbuseReport(ctx context.Context, e *Entry, report *SourceI
 		RelayHost:         host,
 		RelayPort:         relayPort,
 		Raw:               raw,
-		Metadata:          map[string]any{"source_ip": report.IP, "network_name": report.NetworkName, "includes_original_message": original, "includes_evidence_message": true},
+		Metadata:          map[string]any{"source_ip": report.IP, "network_name": report.NetworkName, "evidence_mode": "original_rfc822", "includes_original_message": true, "includes_evidence_message": true},
 	}, func() error {
 		return sendRelayMail(host, port, from.Address, report.AbuseContacts, raw)
 	})
 }
 
-func buildAbuseReportMessage(from string, to []string, subject, body string, e *Entry, report *SourceIPReport, evidence []byte, original bool) []byte {
+func buildAbuseReportMessage(from string, to []string, subject, body string, e *Entry, report *SourceIPReport, evidence []byte) []byte {
 	boundary := "smg-abuse-" + uuid.NewString()
 	feedback := buildFeedbackReport(e, report)
-	filename := "sentinelmail-evidence.eml"
-	if original {
-		filename = "original-message.eml"
-	}
 	var out bytes.Buffer
 	out.WriteString(strings.Join([]string{
 		"From: " + from,
@@ -2082,7 +2124,7 @@ func buildAbuseReportMessage(from string, to []string, subject, body string, e *
 		"",
 		"--" + boundary,
 		"Content-Type: message/rfc822",
-		`Content-Disposition: attachment; filename="` + filename + `"`,
+		`Content-Disposition: attachment; filename="original-message.eml"`,
 		"",
 	}, "\r\n"))
 	out.Write(evidence)
@@ -2107,83 +2149,45 @@ func buildFeedbackReport(e *Entry, report *SourceIPReport) string {
 	return strings.Join(lines, "\r\n")
 }
 
-func (h *Handler) hasReportEvidence(ctx context.Context, e *Entry) bool {
-	_, _, err := h.reportEvidenceBytes(ctx, e)
+func (h *Handler) hasOriginalReportEvidence(ctx context.Context, e *Entry) bool {
+	_, err := h.originalReportEvidence(ctx, e)
 	return err == nil
 }
 
-func (h *Handler) reportEvidenceBytes(ctx context.Context, e *Entry) ([]byte, bool, error) {
+func (h *Handler) originalReportEvidence(ctx context.Context, e *Entry) ([]byte, error) {
 	if e == nil {
-		return nil, false, fmt.Errorf("message evidence is not available")
+		return nil, fmt.Errorf("original message with full headers is not available")
 	}
 	var raw []byte
 	if e.ID != uuid.Nil {
-		if err := h.DB.QueryRow(ctx, `
+		err := h.DB.QueryRow(ctx, `
 			SELECT message_bytes
 			  FROM quarantine_blobs
 			 WHERE quarantine_entry_id = $1
 			   AND organization_id = $2
-		`, e.ID, e.OrganizationID).Scan(&raw); err == nil && len(raw) > 0 {
-			return raw, true, nil
-		} else if err != nil && err != pgx.ErrNoRows {
-			return nil, false, err
+		`, e.ID, e.OrganizationID).Scan(&raw)
+		if err == nil && len(raw) > 0 {
+			return raw, nil
+		}
+		if err != nil && err != pgx.ErrNoRows {
+			return nil, err
 		}
 	}
 	if e.MailLogID != nil {
-		if err := h.DB.QueryRow(ctx, `
+		err := h.DB.QueryRow(ctx, `
 			SELECT message_bytes
 			  FROM mail_log_blobs
 			 WHERE mail_log_id = $1
 			   AND organization_id = $2
-		`, *e.MailLogID, e.OrganizationID).Scan(&raw); err == nil && len(raw) > 0 {
-			return raw, true, nil
-		} else if err != nil && err != pgx.ErrNoRows {
-			return nil, false, err
+		`, *e.MailLogID, e.OrganizationID).Scan(&raw)
+		if err == nil && len(raw) > 0 {
+			return raw, nil
+		}
+		if err != nil && err != pgx.ErrNoRows {
+			return nil, err
 		}
 	}
-	evidence := synthesizedEvidenceMessage(e)
-	if len(evidence) == 0 {
-		return nil, false, fmt.Errorf("message evidence is not available")
-	}
-	return evidence, false, nil
-}
-
-func synthesizedEvidenceMessage(e *Entry) []byte {
-	if e == nil || e.ID == uuid.Nil {
-		return nil
-	}
-	from := ""
-	if e.FromAddr != nil {
-		from = *e.FromAddr
-	}
-	subject := ""
-	if e.Subject != nil {
-		subject = *e.Subject
-	}
-	threat := ""
-	if e.ThreatClass != nil {
-		threat = *e.ThreatClass
-	}
-	clientIP := ""
-	if e.ClientIP != nil {
-		clientIP = *e.ClientIP
-	}
-	headers := []string{
-		"From: " + sanitizeHeader(from),
-		"To: " + sanitizeHeader(e.ToAddr),
-		"Subject: " + sanitizeHeader(subject),
-		"Date: " + e.ReceivedAt.UTC().Format(time.RFC1123Z),
-		"X-SentinelMail-Evidence-ID: " + e.ID.String(),
-		"X-SentinelMail-Source-IP: " + sanitizeHeader(clientIP),
-		"X-SentinelMail-Threat-Class: " + sanitizeHeader(threat),
-	}
-	body := []string{
-		"This is a SentinelMail-generated evidence message.",
-		"",
-		"The original raw message was not available in quarantine storage when this abuse report was sent.",
-		"Stored quarantine metadata is included in the RFC822 headers above.",
-	}
-	return []byte(strings.Join(headers, "\r\n") + "\r\n\r\n" + strings.Join(body, "\r\n") + "\r\n")
+	return nil, fmt.Errorf("original message with full headers is not available")
 }
 
 func (h *Handler) sentEmailQuarantineEntryID(ctx context.Context, e *Entry) *uuid.UUID {
@@ -2340,6 +2344,15 @@ func safeReportValue(value string) string {
 	value = sanitizeHeader(value)
 	value = reportURLRE.ReplaceAllString(value, "[redacted URL]")
 	return strings.TrimSpace(value)
+}
+
+func safeReportSubject(value string) string {
+	value = safeReportValue(value)
+	if value == "" {
+		return "—"
+	}
+	sum := sha256.Sum256([]byte(value))
+	return fmt.Sprintf("[redacted; %d characters; sha256:%s]", len(value), hex.EncodeToString(sum[:])[:12])
 }
 
 func firstNonEmpty(values ...string) string {

@@ -20,6 +20,7 @@ interface SettingMeta {
 interface Setting {
   key: string;
   value: unknown;
+  inherited?: boolean;
   updated_at: string;
 }
 
@@ -146,16 +147,22 @@ export function SchemaSettingsForm({ endpoint, queryKey, groupLabels }: Props) {
             )}
           </CardHeader>
           <CardBody className="grid gap-3 grid-cols-1 md:grid-cols-2">
-            {metas.map((m) => (
+            {metas.map((m) => {
+              const inherited = data.items.some((item) => item.key === m.key && item.inherited);
+              return (
               <div
                 key={m.key}
                 className={dirty[m.key] ? "rounded border border-warning/70 bg-warning/10 p-2" : "rounded border border-transparent p-2"}
               >
                 <Field label={m.label} hint={m.description}>
+                  {inherited && !dirty[m.key] && (
+                    <div className="mb-1 text-xs text-subtle">Using default</div>
+                  )}
                   <Control meta={m} value={form[m.key]} onChange={(v) => update(m.key, v)} />
                 </Field>
               </div>
-            ))}
+            );
+            })}
           </CardBody>
         </Card>
       ))}

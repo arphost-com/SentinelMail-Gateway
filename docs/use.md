@@ -151,6 +151,14 @@ Hand the printed password to the user; they'll re-enroll MFA on next sign-in. (A
 2. **Mail logs** → find similar past messages, check the Rspamd action that triggered it
 3. **Policies** → either raise the org's `quarantine_threshold` (looser for everyone) or add the sender to a per-org allow list (cleaner)
 
+### "I need to report an abusive sender's source IP"
+
+1. First confirm the message is genuinely unwanted or abusive. In **Inbox** or **Quarantine**, mark it as spam, phishing, malware, or other abuse. Never use provider abuse reporting to test a clean or wanted message.
+2. Choose **Report source IP** and review the destination and prepared explanation.
+3. SentinelMail sends a standards-based abuse report with the stored original message attached as `message/rfc822`. The attachment preserves the complete routing and authentication headers that providers such as Amazon SES require.
+4. If the original message is no longer stored, SentinelMail blocks the send instead of filing an incomplete complaint.
+5. Use `email-abuse@amazon.com` only for unwanted or malicious mail sent through Amazon SES. Use the AWS Trust & Safety abuse form for other AWS activity. Providers that require a webform are shown as a handoff instead of receiving email.
+
 ### "I need to send mail TO our gateway from a different network"
 
 You don't need to — internet senders just connect to MX 25. **But** if your own infrastructure (Mailcow, app server, office NAT) needs to relay outbound mail THROUGH the gateway, see [configure.md → `POSTFIX_MYNETWORKS`](configure.md#postfix_mynetworks--who-can-use-you-as-a-relay).

@@ -3,6 +3,7 @@ package mail
 import (
 	"crypto/hmac"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"strings"
@@ -447,6 +448,52 @@ func TestBrandImpersonationLinkMismatchBoostsSuspiciousSubject(t *testing.T) {
 	}
 }
 
+func TestBrandImpersonationQuarantinesICloudVerificationToMicrosoftOAuth(t *testing.T) {
+	ev := &Event{
+		Direction: "inbound",
+		From:      "mail@serviceautopilot.com",
+		FromName:  "Service Autopilot",
+		To:        []string{"barry@qreg.net"},
+		Subject:   "Final reminder",
+		BodyText: `Hello,
+
+This is the final reminder that your iCloud account is pending verification.
+
+You are required to complete verification immediately to avoid permanent loss of contact, notes, mail, photos and many more.
+
+Click the link below and sign in to complete verification immediately.`,
+		URLs: []string{
+			"https://login.microsoftonline.com/common/oauth2/v2.0/authorize?state=ZGtpbmdAb3JlZ29uY2xlYW4uY29t&scope=openid&prompt=none&client_id=aff42d52-9e62-4400-9f29-a920774580cc",
+			"http://crm.serviceautopilot.com/?rk=8a195422-57f6-4e07-8e87-9463a9d61492&el=65035b90-d1f7-420f-a0df-ca31ede50712",
+		},
+		Symbols: map[string]any{
+			"R_SPF_ALLOW":        true,
+			"R_DKIM_ALLOW":       true,
+			"DMARC_POLICY_ALLOW": true,
+		},
+	}
+	got, reason := applyAuthEnforcement("delivered", "", ev)
+	if got != "delivered" || reason != "" {
+		t.Fatalf("auth changed authenticated marketing sender to %q/%q, want delivered/empty", got, reason)
+	}
+	got, reason = applyBrandImpersonationDetection(got, reason, "", nil, ev)
+	if got != "quarantined" {
+		t.Fatalf("iCloud OAuth lure disposition = %q/%q, want quarantined", got, reason)
+	}
+	for _, want := range []string{
+		"brand impersonation: apple",
+		"message claims apple with sensitive context",
+		"link points to unrelated domain login.microsoftonline.com",
+	} {
+		if !strings.Contains(reason, want) {
+			t.Fatalf("reason = %q, want containing %q", reason, want)
+		}
+	}
+	if threat := classifyThreat(ev); threat != "PHISHING" {
+		t.Fatalf("threat = %q, want PHISHING", threat)
+	}
+}
+
 func TestBrandImpersonationAllowsDocusignSystemDomain(t *testing.T) {
 	ev := &Event{
 		Direction: "inbound",
@@ -585,6 +632,22 @@ func TestAuthEnforcementQuarantinesMissingAuthenticationResults(t *testing.T) {
 	}
 }
 
+func TestAuthEnforcementAllowsDeliveryStatusNotification(t *testing.T) {
+	ev := deliveryStatusNotificationEvent()
+	got, reason := applyAuthEnforcement("delivered", "", ev)
+	if got != "delivered" || reason != "" {
+		t.Fatalf("delivery status notification changed to %q/%q, want delivered/empty", got, reason)
+	}
+}
+
+func TestAuthEnforcementQuarantinesNullSenderWithoutDSNEvidence(t *testing.T) {
+	ev := &Event{Direction: "inbound", From: "", Subject: "Ordinary message", Symbols: map[string]any{}}
+	got, reason := applyAuthEnforcement("delivered", "", ev)
+	if got != "quarantined" || reason != "sender authentication results missing" {
+		t.Fatalf("null sender without DSN evidence changed to %q/%q, want quarantine/missing auth", got, reason)
+	}
+}
+
 func TestAuthEnforcementSkipsOutboundMail(t *testing.T) {
 	got, reason := applyAuthEnforcement("delivered", "", &Event{Direction: "outbound", Symbols: map[string]any{}})
 	if got != "delivered" || reason != "" {
@@ -672,6 +735,28 @@ func TestQuarantineActionDeliverAllowsOverThresholdDelivery(t *testing.T) {
 	}
 	if reason != "score >= quarantine_threshold" {
 		t.Fatalf("reason = %q", reason)
+	}
+}
+
+func TestDeliveryStatusNotificationBypassesScoreBasedQuarantine(t *testing.T) {
+	ev := deliveryStatusNotificationEvent()
+	got, reason := decide(&policies.Policy{SpamThreshold: 5, QuarantineThreshold: 7, RejectThreshold: 15}, ev)
+	if got != "quarantined" || reason != "score >= quarantine_threshold" {
+		t.Fatalf("test setup disposition = %q/%q, want quarantined/score threshold", got, reason)
+	}
+	got, reason = applyDeliveryStatusNotificationDisposition(got, reason, ev)
+	if got != "delivered" || reason != "delivery status notification" {
+		t.Fatalf("delivery status notification changed to %q/%q, want delivered/dsn", got, reason)
+	}
+}
+
+func TestDeliveryStatusNotificationStillAllowsReputationQuarantine(t *testing.T) {
+	ev := deliveryStatusNotificationEvent()
+	ev.Symbols["RBL_SPAMHAUS_ZEN"] = map[string]any{"score": 4.0}
+	got, reason := applyDeliveryStatusNotificationDisposition("quarantined", "score >= quarantine_threshold", ev)
+	got, reason = applyReputationBlocklist(got, reason, ev)
+	if got != "quarantined" || reason != "reputation blocklist hit" {
+		t.Fatalf("reputation-listed delivery status notification changed to %q/%q, want quarantine/reputation", got, reason)
 	}
 }
 
@@ -839,6 +924,23 @@ func TestURIBLBlockedDoesNotCountAsReputationHit(t *testing.T) {
 	}
 }
 
+func TestDNSWLLookupFailureDoesNotMaskDBLSpam(t *testing.T) {
+	ev := &Event{Symbols: map[string]any{
+		"R_SPF_ALLOW":        map[string]any{"score": -0.2},
+		"R_DKIM_ALLOW":       map[string]any{"score": -0.2},
+		"DMARC_POLICY_ALLOW": map[string]any{"score": -0.5},
+		"DNSWL_BLOCKED":      map[string]any{"score": 0.0},
+		"DBL_SPAM":           map[string]any{"score": 6.5},
+	}}
+	got, reason := applyReputationBlocklist("tagged", "score >= spam_threshold", ev)
+	if got != "quarantined" || reason != "reputation blocklist hit" {
+		t.Fatalf("DBL_SPAM with DNSWL_BLOCKED changed to %q/%q, want quarantined/reputation", got, reason)
+	}
+	if threat := classifyThreat(ev); threat != "REPUTATION" {
+		t.Fatalf("threat = %q, want REPUTATION", threat)
+	}
+}
+
 func TestReceivedSpamhausPBLZeroScoreDoesNotCountAsReputationHit(t *testing.T) {
 	ev := &Event{Symbols: map[string]any{
 		"R_SPF_ALLOW":           map[string]any{"score": -0.2},
@@ -909,10 +1011,36 @@ func TestChallengeResponseSkipsOutboundMail(t *testing.T) {
 	}
 }
 
+func TestChallengeResponseSkipsDeliveryStatusNotification(t *testing.T) {
+	pol := &policies.Policy{Settings: map[string]any{"challenge_response_enabled": true}}
+	got, reason := applyChallengeResponseHold("delivered", "", pol, "", deliveryStatusNotificationEvent())
+	if got != "delivered" || reason != "" {
+		t.Fatalf("delivery status notification changed to %q/%q, want delivered/empty", got, reason)
+	}
+}
+
 func TestLearnedNotSpamDoesNotOverrideRejected(t *testing.T) {
 	got, reason := applyLearnedClassification("rejected", "sender matched blacklist", &classifier.Match{Verdict: "not_spam", SampleCount: 1})
 	if got != "rejected" || reason != "sender matched blacklist" {
 		t.Fatalf("learned not_spam changed hard reject to %q/%q", got, reason)
+	}
+}
+
+func deliveryStatusNotificationEvent() *Event {
+	raw := "From: MAILER-DAEMON@example.com\r\n" +
+		"Subject: Undelivered Mail Returned to Sender\r\n" +
+		"Content-Type: multipart/report; report-type=delivery-status; boundary=dsn\r\n" +
+		"\r\n--dsn\r\nContent-Type: message/delivery-status\r\n\r\n"
+	return &Event{
+		Direction:     "inbound",
+		From:          "",
+		To:            []string{"barry@qreg.net"},
+		Subject:       "Undelivered Mail Returned to Sender",
+		Score:         8.3,
+		RawMessageB64: base64.StdEncoding.EncodeToString([]byte(raw)),
+		Symbols: map[string]any{
+			"BOUNCE": map[string]any{"score": -0.1, "options": []any{"DSN"}},
+		},
 	}
 }
 

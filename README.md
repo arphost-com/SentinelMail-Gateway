@@ -9,6 +9,7 @@ SentinelMail is sold as infrastructure software, not shared-hosting software. It
 - **Task-oriented guides** live in [`docs/`](docs/) — start with [`docs/install.md`](docs/install.md) for a fresh production install
 - **Plain-English role guides** live in [`docs/role-guides.md`](docs/role-guides.md) for end users, org admins, MSP admins, and super admins
 - **Customer handoff quick start** is available as [`docs/customer-quick-start.md`](docs/customer-quick-start.md) and [`docs/customer-quick-start.pdf`](docs/customer-quick-start.pdf)
+- **Security scanner review notes** live in [`docs/security-scans.md`](docs/security-scans.md)
 - **Bug reports, fixes, and update flow** are covered in [`CONTRIBUTING.md`](CONTRIBUTING.md) and [`docs/contributing.md`](docs/contributing.md)
 - **In-app docs** at **Docs** in the sidebar once you're signed in
 - **This README** focuses on architecture, REST API, repo layout, and dev quickstart
@@ -209,7 +210,9 @@ Required CI/CD variables: none for the default bootstrap. Optional: `SMG_DOTENV_
 
 Runner needs `install`, `find`, `mv` in its sudoers (we use `sudo install -d -o gitlab-runner …` to create the runtime dir). No broader sudo needed. docker02 also provides the scanner CLIs used by the security stage: `semgrep`, `trivy`, `gitleaks`, `trufflehog`, `dependency-check`, and `bandit`.
 
-Trivy runs with `--ignore-unfixed` for repo and container scans. That is a deliberate security policy: the pipeline still fails on HIGH/CRITICAL findings with an available fix, while vendor-unfixed distro packages remain visible in JSON artifacts for tracking. The Dockerfiles run package upgrades during build, so once Debian/Ubuntu/Alpine publish fixed packages the same pipeline starts enforcing them without carrying local OS forks.
+Trivy runs with `--ignore-unfixed` for repo and container scans. That is a deliberate security policy: the pipeline still fails on HIGH/CRITICAL findings with an available fix, while vendor-unfixed distro packages stay out of the gate artifacts until upstream publishes a fixed version. The Dockerfiles run package upgrades during build, so once Debian/Ubuntu/Alpine publish fixed packages the same pipeline starts enforcing them without carrying local OS forks.
+
+Latest Trivy artifact review is recorded in [`docs/security-scans.md`](docs/security-scans.md). As of the 2026-07-04 review of `main` pipeline `1623`, the repo scan and all service image scans reported zero HIGH/CRITICAL findings.
 
 The Caddy image is built from the upstream Caddy source tag instead of copying the official binary when the official image lags a patched transitive dependency. This preserves the same Caddy release behavior while allowing the pipeline to enforce fixed Go module versions.
 

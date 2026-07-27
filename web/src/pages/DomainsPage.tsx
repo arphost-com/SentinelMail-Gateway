@@ -14,6 +14,8 @@ interface Domain {
   organization_id: string;
   name: string;
   is_active: boolean;
+  retention_days?: number;
+  effective_retention_days: number;
   created_at: string;
 }
 
@@ -26,6 +28,8 @@ interface DomainForm {
   organization_id: string;
   name: string;
   is_active: boolean;
+  inherit_retention: boolean;
+  retention_days: number;
 }
 
 export function DomainsPage() {
@@ -53,6 +57,12 @@ export function DomainsPage() {
   const columns: ColumnDef<Domain>[] = [
     { key: "name", header: "Domain", sortValue: (d) => d.name, render: (d) => <strong>{d.name}</strong> },
     { key: "org", header: "Organization", sortValue: (d) => orgName(d.organization_id), render: (d) => orgName(d.organization_id) },
+    {
+      key: "retention",
+      header: "Retention",
+      sortValue: (d) => d.effective_retention_days,
+      render: (d) => d.retention_days ? `${d.retention_days} days` : `${d.effective_retention_days} days (default)`,
+    },
     { key: "active", header: "Active", sortValue: (d) => d.is_active, render: (d) => (d.is_active ? "yes" : "no") },
   ];
 
@@ -89,10 +99,10 @@ export function DomainsPage() {
         <DomainModal
           title="New domain"
           orgs={orgs.data?.items ?? []}
-          initial={{ organization_id: orgs.data?.items?.[0]?.id ?? "", name: "", is_active: true }}
+          initial={{ organization_id: orgs.data?.items?.[0]?.id ?? "", name: "", is_active: true, inherit_retention: true, retention_days: 90 }}
           onClose={() => setCreating(false)}
           onSubmit={async (v) => {
-            await api.post("/domains", v);
+            await api.post("/domains", { ...v, ...domainPayload(v) });
             qc.invalidateQueries({ queryKey: ["domains"] });
             setCreating(false);
           }}
@@ -104,10 +114,16 @@ export function DomainsPage() {
           title={`Edit ${editing.name}`}
           orgs={orgs.data?.items ?? []}
           orgFixed
-          initial={{ organization_id: editing.organization_id, name: editing.name, is_active: editing.is_active }}
+          initial={{
+            organization_id: editing.organization_id,
+            name: editing.name,
+            is_active: editing.is_active,
+            inherit_retention: editing.retention_days === undefined,
+            retention_days: editing.retention_days ?? editing.effective_retention_days,
+          }}
           onClose={() => setEditing(null)}
           onSubmit={async (v) => {
-            await api.patch(`/domains/${editing.id}`, { name: v.name, is_active: v.is_active });
+            await api.patch(`/domains/${editing.id}`, { name: v.name, is_active: v.is_active, ...domainPayload(v) });
             qc.invalidateQueries({ queryKey: ["domains"] });
             setEditing(null);
           }}
@@ -194,8 +210,34 @@ function DomainModal({
             <span className="text-sm">Domain accepts mail</span>
           </label>
         </Field>
+        <Field label="Retention">
+          <div className="grid gap-2">
+            <label className="inline-flex items-center gap-2">
+              <input
+                type="checkbox"
+                checked={form.inherit_retention}
+                onChange={(e) => setForm({ ...form, inherit_retention: e.target.checked })}
+              />
+              <span className="text-sm">Use default</span>
+            </label>
+            <Input
+              type="number"
+              min={1}
+              max={365}
+              value={form.retention_days}
+              disabled={form.inherit_retention}
+              onChange={(e) => setForm({ ...form, retention_days: Number(e.target.value) })}
+            />
+          </div>
+        </Field>
         {err && <div role="alert" className="text-sm text-danger">{err}</div>}
       </form>
     </Modal>
   );
+}
+
+function domainPayload(form: DomainForm) {
+  return form.inherit_retention
+    ? { inherit_retention: true, retention_days: undefined }
+    : { inherit_retention: false, retention_days: form.retention_days };
 }

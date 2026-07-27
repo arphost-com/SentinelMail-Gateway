@@ -11,6 +11,7 @@ import { Input } from "../components/ui/Input";
 import { Modal } from "../components/ui/Modal";
 import { ScamGuidance } from "../components/ui/ScamGuidance";
 import { SpoofWarning } from "../components/ui/SpoofWarning";
+import { confirmDanger } from "../components/ui/confirm";
 
 interface QuarantineEntry {
   id: string;
@@ -82,6 +83,7 @@ interface BlockSenderResponse {
 interface PurgeExpiredResponse {
   purged_entries: number;
   purged_blobs: number;
+  purged_mailbox_messages: number;
 }
 
 interface BulkActionResponse {
@@ -245,6 +247,9 @@ export function QuarantinePage() {
   const visibleIDs = useMemo(() => data?.items.map((entry) => entry.id) ?? [], [data?.items]);
   const selectedCount = selected.size;
   const allVisibleSelected = visibleIDs.length > 0 && visibleIDs.every((id) => selected.has(id));
+  const selectedReportsAreEligible = selectedCount > 0 && (data?.items ?? [])
+    .filter((entry) => selected.has(entry.id))
+    .every(isAbuseReportable);
 
   useEffect(() => {
     setSelected((current) => {
@@ -458,7 +463,7 @@ export function QuarantinePage() {
       )}
       {purgeResult && (
         <div role="status" className="mb-4 rounded border border-border bg-muted px-3 py-2 text-sm">
-          Purged {purgeResult.purged_entries.toLocaleString()} expired quarantine entries and {purgeResult.purged_blobs.toLocaleString()} stored messages.
+          Purged {purgeResult.purged_entries.toLocaleString()} expired quarantine entries, {purgeResult.purged_blobs.toLocaleString()} stored messages, and {purgeResult.purged_mailbox_messages.toLocaleString()} inbox copies.
         </div>
       )}
 
@@ -487,7 +492,12 @@ export function QuarantinePage() {
             <Button size="sm" variant="secondary" disabled={bulk.isPending} onClick={() => bulk.mutate({ action: "block_root_domain" })}>
               Block root domains
             </Button>
-            <Button size="sm" variant="secondary" disabled={bulk.isPending} onClick={() => bulk.mutate({ action: "report_source_ip" })}>
+            <Button
+              size="sm"
+              variant="secondary"
+              disabled={bulk.isPending || !selectedReportsAreEligible}
+              onClick={() => confirmDanger("Only continue if every selected message is unsolicited or abusive. Send each original message and its full headers to the source network's abuse contact?") && bulk.mutate({ action: "report_source_ip" })}
+            >
               Report source IPs
             </Button>
             <Button size="sm" variant="secondary" disabled={bulk.isPending} onClick={() => bulk.mutate({ action: "mark_spam" })}>
@@ -705,7 +715,7 @@ export function QuarantinePage() {
               <Button
                 size="sm"
                 variant="secondary"
-                disabled={!detailItem.client_ip || prepareSourceIPReport.isPending}
+                disabled={!detailItem.client_ip || !isAbuseReportable(detailItem) || prepareSourceIPReport.isPending}
                 onClick={() => {
                   prepareSourceIPReport.reset();
                   sendSourceIPReport.reset();
@@ -976,6 +986,10 @@ function loadingEntry(id: string): QuarantineEntry {
     email_type: "Loading",
     received_at: new Date().toISOString(),
   };
+}
+
+function isAbuseReportable(entry: QuarantineEntry): boolean {
+  return ["SPAM", "PHISHING", "MALWARE", "VIRUS", "OTHER"].includes((entry.threat_class ?? "").trim().toUpperCase());
 }
 
 function CopyField({ label, value }: { label: string; value: string }) {

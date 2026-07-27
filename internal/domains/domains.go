@@ -22,18 +22,30 @@ import (
 )
 
 type Domain struct {
-	ID             uuid.UUID `json:"id"`
-	OrganizationID uuid.UUID `json:"organization_id"`
-	Name           string    `json:"name"`
-	IsActive       bool      `json:"is_active"`
-	CreatedAt      time.Time `json:"created_at"`
-	UpdatedAt      time.Time `json:"updated_at"`
+	ID                     uuid.UUID `json:"id"`
+	OrganizationID         uuid.UUID `json:"organization_id"`
+	Name                   string    `json:"name"`
+	IsActive               bool      `json:"is_active"`
+	RetentionDays          *int      `json:"retention_days,omitempty"`
+	EffectiveRetentionDays int       `json:"effective_retention_days"`
+	CreatedAt              time.Time `json:"created_at"`
+	UpdatedAt              time.Time `json:"updated_at"`
 }
 
-const cols = `id, organization_id, name, is_active, created_at, updated_at`
+const cols = `id, organization_id, name, is_active, retention_days,
+              COALESCE(retention_days, (
+                  SELECT (value #>> '{}')::int
+                    FROM system_settings
+                   WHERE key IN ('message.retention_days', 'quarantine.retention_days')
+                     AND (organization_id = domains.organization_id OR organization_id IS NULL)
+                   ORDER BY organization_id IS NULL,
+                            CASE key WHEN 'message.retention_days' THEN 0 ELSE 1 END
+                   LIMIT 1
+              ), 90) AS effective_retention_days,
+              created_at, updated_at`
 
 func scan(row pgx.Row, d *Domain) error {
-	return row.Scan(&d.ID, &d.OrganizationID, &d.Name, &d.IsActive, &d.CreatedAt, &d.UpdatedAt)
+	return row.Scan(&d.ID, &d.OrganizationID, &d.Name, &d.IsActive, &d.RetentionDays, &d.EffectiveRetentionDays, &d.CreatedAt, &d.UpdatedAt)
 }
 
 type Handler struct{ DB *pgxpool.Pool }
@@ -85,9 +97,11 @@ func (h *Handler) list(w http.ResponseWriter, r *http.Request) {
 }
 
 type writeReq struct {
-	OrganizationID *uuid.UUID `json:"organization_id,omitempty"`
-	Name           string     `json:"name"`
-	IsActive       *bool      `json:"is_active,omitempty"`
+	OrganizationID   *uuid.UUID `json:"organization_id,omitempty"`
+	Name             string     `json:"name"`
+	IsActive         *bool      `json:"is_active,omitempty"`
+	RetentionDays    *int       `json:"retention_days,omitempty"`
+	InheritRetention *bool      `json:"inherit_retention,omitempty"`
 }
 
 func (h *Handler) create(w http.ResponseWriter, r *http.Request) {
@@ -114,16 +128,24 @@ func (h *Handler) create(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteError(w, http.StatusForbidden, "forbidden for that organization")
 		return
 	}
-	var d Domain
 	tx, err := h.DB.Begin(r.Context())
 	if err != nil {
 		httpx.WriteError(w, http.StatusInternalServerError, "tx")
 		return
 	}
 	defer func() { _ = tx.Rollback(r.Context()) }()
-	err = scan(tx.QueryRow(r.Context(),
-		`INSERT INTO domains (organization_id, name) VALUES ($1, $2) RETURNING `+cols,
-		orgID, req.Name), &d)
+	retentionDays := req.RetentionDays
+	if req.InheritRetention != nil && *req.InheritRetention {
+		retentionDays = nil
+	}
+	if retentionDays != nil && !validRetentionDays(*retentionDays) {
+		httpx.WriteError(w, http.StatusBadRequest, "retention_days must be between 1 and 365")
+		return
+	}
+	var domainID uuid.UUID
+	err = tx.QueryRow(r.Context(),
+		`INSERT INTO domains (organization_id, name, retention_days) VALUES ($1, $2, $3) RETURNING id`,
+		orgID, req.Name, retentionDays).Scan(&domainID)
 	if err != nil {
 		httpx.WriteError(w, http.StatusInternalServerError, "create failed: "+err.Error())
 		return
@@ -134,12 +156,17 @@ func (h *Handler) create(w http.ResponseWriter, r *http.Request) {
 		                      dmarc_enforce, enable_greylist, quarantine_action, settings)
 		VALUES ($1, $2, $3, 5.0, 7.0, 15.0, false, true, 'tag',
 		        '{"preset":"balanced","auto_created":true}'::jsonb)
-	`, orgID, d.ID, d.Name+" balanced spam tag"); err != nil {
+	`, orgID, domainID, req.Name+" balanced spam tag"); err != nil {
 		httpx.WriteError(w, http.StatusInternalServerError, "policy create failed: "+err.Error())
 		return
 	}
 	if err := tx.Commit(r.Context()); err != nil {
 		httpx.WriteError(w, http.StatusInternalServerError, "commit failed")
+		return
+	}
+	var d Domain
+	if err := scan(h.DB.QueryRow(r.Context(), `SELECT `+cols+` FROM domains WHERE id = $1`, domainID), &d); err != nil {
+		httpx.WriteError(w, http.StatusInternalServerError, "read failed")
 		return
 	}
 	httpx.WriteJSON(w, http.StatusCreated, d)
@@ -316,13 +343,22 @@ func (h *Handler) update(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	if req.RetentionDays != nil && !validRetentionDays(*req.RetentionDays) {
+		httpx.WriteError(w, http.StatusBadRequest, "retention_days must be between 1 and 365")
+		return
+	}
+	retentionDays := req.RetentionDays
+	if req.InheritRetention != nil && *req.InheritRetention {
+		retentionDays = nil
+	}
 	_, err = h.DB.Exec(r.Context(), `
 		UPDATE domains
 		   SET name = COALESCE(NULLIF($1,''), name),
 		       is_active = COALESCE($2, is_active),
+		       retention_days = CASE WHEN $4::boolean THEN NULL ELSE COALESCE($3, retention_days) END,
 		       updated_at = now()
-		 WHERE id = $3
-	`, strings.ToLower(req.Name), req.IsActive, id)
+		 WHERE id = $5
+	`, strings.ToLower(req.Name), req.IsActive, retentionDays, req.InheritRetention != nil && *req.InheritRetention, id)
 	if err != nil {
 		httpx.WriteError(w, http.StatusInternalServerError, "update failed")
 		return
@@ -371,6 +407,10 @@ func queryAll(ctx context.Context, db *pgxpool.Pool, sql string, args ...any) ([
 		out = append(out, d)
 	}
 	return out, rows.Err()
+}
+
+func validRetentionDays(days int) bool {
+	return days >= 1 && days <= 365
 }
 
 func (h *Handler) dispositionCounts(ctx context.Context, orgID, domainID uuid.UUID) (map[string]int, error) {

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -55,10 +56,35 @@ func (h *OrgHandler) list(w http.ResponseWriter, r *http.Request) {
 		}
 		out = append(out, s)
 	}
+	if !hasSetting(out, "message.retention_days") {
+		var inherited json.RawMessage
+		var updatedAt time.Time
+		if err := h.DB.QueryRow(r.Context(), `
+			SELECT value, updated_at
+			  FROM system_settings
+			 WHERE organization_id IS NULL
+			   AND key IN ('message.retention_days', 'quarantine.retention_days')
+			 ORDER BY CASE key WHEN 'message.retention_days' THEN 0 ELSE 1 END
+			 LIMIT 1
+		`).Scan(&inherited, &updatedAt); err == nil {
+			out = append(out, Setting{Key: "message.retention_days", Value: inherited, UpdatedAt: updatedAt, Inherited: true})
+		} else {
+			out = append(out, Setting{Key: "message.retention_days", Value: json.RawMessage(`90`), Inherited: true})
+		}
+	}
 	httpx.WriteJSON(w, http.StatusOK, map[string]any{
 		"items":  out,
 		"schema": DefaultOrgKeys,
 	})
+}
+
+func hasSetting(items []Setting, key string) bool {
+	for _, item := range items {
+		if item.Key == key {
+			return true
+		}
+	}
+	return false
 }
 
 func (h *OrgHandler) patch(w http.ResponseWriter, r *http.Request) {
