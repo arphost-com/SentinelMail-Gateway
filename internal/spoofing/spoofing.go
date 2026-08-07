@@ -48,14 +48,25 @@ func Analyze(reason string, symbols json.RawMessage) Result {
 	}
 
 	signals = unique(signals)
-	if len(signals) == 0 {
-		return Result{}
+	if len(signals) > 0 {
+		return Result{
+			Status:  "suspected_spoof",
+			Warning: "Possible spoofed email: the sender domain did not pass normal mail authentication checks.",
+			Signals: signals,
+		}
 	}
-	return Result{
-		Status:  "suspected_spoof",
-		Warning: "Possible spoofed email: the sender domain did not pass normal mail authentication checks.",
-		Signals: signals,
+	if hasSymbol(symbolNames, "DMARC_POLICY_ALLOW") ||
+		hasSymbol(symbolNames, "R_DKIM_ALLOW") ||
+		hasSymbol(symbolNames, "R_SPF_ALLOW") {
+		return Result{Status: "authenticated"}
 	}
+	if hasSymbol(symbolNames, "AUTH_NA") ||
+		hasSymbol(symbolNames, "DMARC_NA") ||
+		hasSymbol(symbolNames, "R_DKIM_NA") ||
+		hasSymbol(symbolNames, "R_SPF_NA") {
+		return Result{Status: "missing"}
+	}
+	return Result{}
 }
 
 func symbolNames(raw json.RawMessage) []string {

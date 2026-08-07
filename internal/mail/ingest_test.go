@@ -292,6 +292,26 @@ Click Here To Find Out All About The Vertigo Nutrient`,
 	}
 }
 
+func TestCommonScamDetectionQuarantinesHomoglyphWalletAccessPhishing(t *testing.T) {
+	ev := &Event{
+		From:    "user5915@fs.uni-lj.si",
+		To:      []string{"barry@qreg.net"},
+		Subject: "Restore Full Ԝаllеt Access — Sync Now",
+		Score:   -0.01,
+		Action:  "no action",
+	}
+	got, reason := applyCommonScamDetection("delivered", "", ev)
+	if got != "quarantined" {
+		t.Fatalf("disposition = %q, want quarantined", got)
+	}
+	if reason != "detected wallet access phishing" {
+		t.Fatalf("reason = %q", reason)
+	}
+	if threat := classifyThreat(ev); threat != "PHISHING" {
+		t.Fatalf("threat = %q, want PHISHING", threat)
+	}
+}
+
 func TestCommonScamDetectionQuarantinesHealthMiracleSpam(t *testing.T) {
 	ev := &Event{
 		From:    "Samantha@info.smartlifekart.com",
@@ -482,7 +502,7 @@ Click the link below and sign in to complete verification immediately.`,
 	}
 	for _, want := range []string{
 		"brand impersonation: apple",
-		"message claims apple with sensitive context",
+		"account or payment pressure asks the recipient to update details",
 		"link points to unrelated domain login.microsoftonline.com",
 	} {
 		if !strings.Contains(reason, want) {
@@ -505,6 +525,78 @@ func TestBrandImpersonationAllowsDocusignSystemDomain(t *testing.T) {
 	got, reason := applyBrandImpersonationDetection("delivered", "", "", nil, ev)
 	if got != "delivered" || reason != "" {
 		t.Fatalf("official sender changed to %q/%q, want delivered/empty", got, reason)
+	}
+}
+
+func TestBrandImpersonationAllowsAuthenticatedNewsletterMentioningOtherBrands(t *testing.T) {
+	ev := &Event{
+		Direction: "inbound",
+		From:      "bounce@mail.cointracker.io",
+		FromName:  "CoinTracker",
+		Subject:   "Crypto portfolio update",
+		BodyText:  "Review your connected Google account and follow CoinTracker on Twitter.",
+		URLs:      []string{"https://twitter.com/cointracker", "https://fonts.googleapis.com/css"},
+		Symbols: map[string]any{
+			"R_SPF_ALLOW": true, "R_DKIM_ALLOW": true, "DMARC_POLICY_ALLOW": true,
+		},
+	}
+	profiles := []protectedBrandProfile{{
+		name: "google", terms: []string{"google", "gmail", "google account"},
+		senderDomains: []string{"google.com"}, cues: []string{"account", "security", "login"},
+	}}
+	got, reason := applyBrandImpersonationDetectionWithProfiles("delivered", "", "", nil, ev, profiles)
+	if got != "delivered" || reason != "" {
+		t.Fatalf("authenticated newsletter changed to %q/%q, want delivered/empty", got, reason)
+	}
+	if threat := classifyThreatWithProfiles(ev, defaultBrandAnalysisOptions(), nil, profiles); threat != "" {
+		t.Fatalf("authenticated newsletter threat = %q, want empty", threat)
+	}
+}
+
+func TestBrandImpersonationAllowsAuthenticatedDealsNewsletterWithBrandInSubject(t *testing.T) {
+	ev := &Event{
+		Direction:       "inbound",
+		From:            "bounce@email.twentytwowords.com",
+		FromName:        "22 Words",
+		Subject:         "Amazon PLUS Walmart Deals Just Released Today!",
+		BodyText:        "Today's Amazon Prime and Walmart shopping deals are available now.",
+		URLs:            []string{"https://links.22w.co/click/deals"},
+		ListUnsubscribe: "<https://links.22w.co/unsubscribe?id=123>",
+		Symbols: map[string]any{
+			"R_SPF_ALLOW": true, "R_DKIM_ALLOW": true, "DMARC_POLICY_ALLOW": true,
+		},
+	}
+	got, reason := applyBrandImpersonationDetection("delivered", "", "", nil, ev)
+	if got != "delivered" || reason != "" {
+		t.Fatalf("authenticated deals newsletter changed to %q/%q, want delivered/empty", got, reason)
+	}
+	if threat := classifyThreat(ev); threat != "" {
+		t.Fatalf("authenticated deals newsletter threat = %q, want empty", threat)
+	}
+}
+
+func TestBrandImpersonationAllowsOfficialBrandSenderMentioningOtherBrands(t *testing.T) {
+	ev := &Event{
+		Direction: "inbound",
+		From:      "bounces@em7877.tm.openai.com",
+		FromName:  "ChatGPT",
+		Subject:   "[Task Update] Weekly finances update",
+		BodyText:  "Your portfolio includes services from Google and other providers.",
+		URLs:      []string{"https://twitter.com/openai"},
+		Symbols: map[string]any{
+			"R_SPF_ALLOW": true, "R_DKIM_ALLOW": true, "DMARC_POLICY_ALLOW": true,
+		},
+	}
+	profiles := []protectedBrandProfile{
+		{name: "openai", terms: []string{"openai", "chatgpt"}, senderDomains: []string{"openai.com"}, cues: []string{"account"}},
+		{name: "google", terms: []string{"google", "gmail"}, senderDomains: []string{"google.com"}, cues: []string{"account", "security"}},
+	}
+	got, reason := applyBrandImpersonationDetectionWithProfiles("delivered", "", "", nil, ev, profiles)
+	if got != "delivered" || reason != "" {
+		t.Fatalf("official brand sender changed to %q/%q, want delivered/empty", got, reason)
+	}
+	if threat := classifyThreatWithProfiles(ev, defaultBrandAnalysisOptions(), nil, profiles); threat != "" {
+		t.Fatalf("official brand sender threat = %q, want empty", threat)
 	}
 }
 
@@ -844,6 +936,52 @@ func TestReputationBlocklistQuarantinesLowScoreMail(t *testing.T) {
 	}
 }
 
+func TestAuthenticatedFirstPartyRspamdURIBLDoesNotQuarantineFigureStatement(t *testing.T) {
+	ev := &Event{
+		Direction: "inbound",
+		From:      "msprvs1=20675RgQILFIP=bounces-205586-3@outbound.figure.com",
+		Subject:   "Figure Loan Statement",
+		Score:     5.1,
+		Symbols: map[string]any{
+			"R_SPF_ALLOW":        map[string]any{"score": 0.0},
+			"R_DKIM_ALLOW":       map[string]any{"score": 0.0},
+			"DMARC_POLICY_ALLOW": map[string]any{"score": 0.0, "options": []any{"outbound.figure.com", "reject"}},
+			"RSPAMD_URIBL":       map[string]any{"score": 4.5, "options": []any{"figure.com:url"}},
+		},
+	}
+	got, reason := applyReputationBlocklist("tagged", "score >= spam_threshold", ev)
+	if got != "tagged" || reason != "score >= spam_threshold" {
+		t.Fatalf("authenticated first-party URL changed to %q/%q, want tagged/score reason", got, reason)
+	}
+	if threat := classifyThreat(ev); threat != "" {
+		t.Fatalf("authenticated first-party URL threat = %q, want empty", threat)
+	}
+}
+
+func TestRspamdURIBLStillQuarantinesUnrelatedOrUnauthenticatedURL(t *testing.T) {
+	tests := []Event{
+		{
+			From: "sender@example.com",
+			Symbols: map[string]any{
+				"DMARC_POLICY_ALLOW": map[string]any{"score": 0.0},
+				"RSPAMD_URIBL":       map[string]any{"score": 4.5, "options": []any{"credential-harvest.test:url"}},
+			},
+		},
+		{
+			From: "sender@example.com",
+			Symbols: map[string]any{
+				"RSPAMD_URIBL": map[string]any{"score": 4.5, "options": []any{"example.com:url"}},
+			},
+		},
+	}
+	for i := range tests {
+		got, reason := applyReputationBlocklist("delivered", "", &tests[i])
+		if got != "quarantined" || reason != "reputation blocklist hit" {
+			t.Fatalf("case %d changed to %q/%q, want quarantined/reputation", i, got, reason)
+		}
+	}
+}
+
 func TestGenericPhishingHeuristicDoesNotCountAsReputationHit(t *testing.T) {
 	ev := &Event{Symbols: map[string]any{"PHISHING": map[string]any{"score": 2.0}}}
 	got, reason := applyReputationBlocklist("delivered", "", ev)
@@ -1068,5 +1206,164 @@ func TestMailboxCopiesOnlyForDeliveredOrTagged(t *testing.T) {
 		if shouldCreateMailboxCopy(disposition) {
 			t.Fatalf("should not create mailbox copy for %q", disposition)
 		}
+	}
+}
+
+func TestDatabaseBrandProfileQuarantinesSpotifyPaymentLure(t *testing.T) {
+	ev := &Event{
+		Direction: "inbound",
+		From:      "bounces@smtpapi.worldlibertyfinancial.com.co",
+		FromName:  "Spotify",
+		ReplyTo:   "Spotify@worldlibertyfinancial.com.co",
+		Subject:   "Action Required: Update Your Payment Details",
+		BodyText:  "We still can't process your payment. You'll lose Spotify Premium. UPDATE DETAILS",
+		URLs:      []string{"https://maillinkforward.encharge.io/ls/click?id=example"},
+		Symbols: map[string]any{
+			"R_SPF_ALLOW":        map[string]any{"score": -0.2},
+			"R_DKIM_ALLOW":       map[string]any{"score": -0.2},
+			"DMARC_POLICY_ALLOW": map[string]any{"score": -0.5},
+		},
+	}
+	profiles := append([]protectedBrandProfile(nil), protectedBrandProfiles...)
+	profiles = append(profiles, protectedBrandProfile{
+		name:          "Spotify",
+		terms:         []string{"spotify", "spotify premium"},
+		senderDomains: []string{"spotify.com", "scdn.co"},
+		cues:          []string{"payment", "billing", "premium", "update"},
+	})
+	got, reason := applyBrandImpersonationDetectionWithProfiles("delivered", "", "", nil, ev, profiles)
+	if got != "quarantined" {
+		t.Fatalf("disposition = %q, want quarantined; reason=%q", got, reason)
+	}
+	if !strings.Contains(strings.ToLower(reason), "spotify") {
+		t.Fatalf("reason = %q, want Spotify brand evidence", reason)
+	}
+}
+
+func TestDatabaseBrandProfileAllowsAuthenticatedSpotifySender(t *testing.T) {
+	ev := &Event{
+		Direction: "inbound",
+		From:      "no-reply@spotify.com",
+		FromName:  "Spotify",
+		Subject:   "Your Spotify Premium receipt",
+		BodyText:  "Your payment was received.",
+		URLs:      []string{"https://spotify.com/account"},
+		Symbols: map[string]any{
+			"DMARC_POLICY_ALLOW": map[string]any{"score": -0.5},
+		},
+	}
+	profiles := []protectedBrandProfile{{
+		name:          "Spotify",
+		terms:         []string{"spotify", "spotify premium"},
+		senderDomains: []string{"spotify.com", "scdn.co"},
+		cues:          []string{"payment", "billing", "premium", "update"},
+	}}
+	got, reason := applyBrandImpersonationDetectionWithProfiles("delivered", "", "", nil, ev, profiles)
+	if got != "delivered" || reason != "" {
+		t.Fatalf("official Spotify sender changed to %q/%q", got, reason)
+	}
+}
+
+func TestDatabaseBrandProfileAllowsLegitimateMarketingMentionWithOnlyStaticAssets(t *testing.T) {
+	ev := &Event{
+		Direction: "inbound",
+		From:      "newsletter@music-news.example",
+		FromName:  "Music News",
+		Subject:   "Spotify Premium payment options compared",
+		BodyText:  "Our independent guide compares Spotify Premium billing plans.",
+		URLs:      []string{"https://cdn.music-news.example/images/spotify-premium.png"},
+		Symbols:   map[string]any{"DMARC_POLICY_ALLOW": true},
+	}
+	profiles := []protectedBrandProfile{{
+		name: "spotify", terms: []string{"spotify", "spotify premium"},
+		senderDomains: []string{"spotify.com", "scdn.co"},
+		cues:          []string{"payment", "billing", "premium", "update"},
+	}}
+	got, reason := applyBrandImpersonationDetectionWithProfiles("delivered", "", "", nil, ev, profiles)
+	if got != "delivered" || reason != "" {
+		t.Fatalf("independent marketing mention changed to %q/%q, want delivered/empty", got, reason)
+	}
+}
+
+func TestDatabaseBrandProfileQuarantinesAuthenticatedLookalikeDomain(t *testing.T) {
+	ev := &Event{
+		Direction: "inbound",
+		From:      "billing@spotify-account-security.example",
+		FromName:  "Spotify Support",
+		Subject:   "Spotify payment failed",
+		BodyText:  "Your subscription will end. Update payment now to restore access.",
+		URLs:      []string{"https://spotify-account-security.example/update-payment"},
+		Symbols: map[string]any{
+			"R_SPF_ALLOW": true, "R_DKIM_ALLOW": true, "DMARC_POLICY_ALLOW": true,
+		},
+	}
+	profiles := []protectedBrandProfile{{
+		name: "spotify", terms: []string{"spotify", "spotify premium"},
+		senderDomains: []string{"spotify.com", "scdn.co"},
+		cues:          []string{"payment", "billing", "premium", "update"},
+	}}
+	got, reason := applyBrandImpersonationDetectionWithProfiles("delivered", "", "", nil, ev, profiles)
+	if got != "quarantined" {
+		t.Fatalf("authenticated lookalike changed to %q/%q, want quarantined", got, reason)
+	}
+}
+
+func TestDatabaseBrandProfileQuarantinesPaymentPressureWithoutURL(t *testing.T) {
+	ev := &Event{
+		Direction: "inbound",
+		From:      "billing@unrelated-sender.example",
+		Subject:   "Action required for Spotify Premium",
+		BodyText:  "We cannot process your payment. Your subscription will end. Update your details now.",
+	}
+	profiles := []protectedBrandProfile{{
+		name: "spotify", terms: []string{"spotify", "spotify premium"},
+		senderDomains: []string{"spotify.com", "scdn.co"},
+		cues:          []string{"payment", "billing", "premium", "update"},
+	}}
+	got, reason := applyBrandImpersonationDetectionWithProfiles("delivered", "", "", nil, ev, profiles)
+	if got != "quarantined" {
+		t.Fatalf("payment pressure changed to %q/%q, want quarantined", got, reason)
+	}
+	if !strings.Contains(reason, "account or payment pressure") {
+		t.Fatalf("reason = %q, want pressure signal", reason)
+	}
+}
+
+func TestPrioritizedSandboxURLsPrefersCTAOverImagesAndUnsubscribe(t *testing.T) {
+	ev := &Event{
+		ListUnsubscribe: "<https://mailer.example/unsubscribe?id=123>",
+		URLs: []string{
+			"https://cdn.example/images/header.png",
+			"https://mailer.example/unsubscribe?id=123",
+			"https://tracking.example/open.gif?id=123",
+			"https://redirect.example/ls/click?id=cta",
+			"https://account.example/verify-payment",
+		},
+	}
+	got := prioritizedSandboxURLs(ev)
+	if len(got) != 2 {
+		t.Fatalf("prioritized URL count = %d, want 2 actionable targets: %#v", len(got), got)
+	}
+	if got[0] != "https://account.example/verify-payment" ||
+		got[1] != "https://redirect.example/ls/click?id=cta" {
+		t.Fatalf("prioritized URLs = %#v, want account CTA then redirect CTA", got)
+	}
+	for _, candidate := range got {
+		if strings.Contains(candidate, "unsubscribe") || strings.Contains(candidate, "header.png") {
+			t.Fatalf("low-value URL selected ahead of CTA: %q", candidate)
+		}
+	}
+}
+
+func TestPrioritizedSandboxURLsDeduplicatesAndRejectsUnsafeSchemes(t *testing.T) {
+	ev := &Event{URLs: []string{
+		"javascript:alert(1)",
+		"mailto:user@example.com",
+		"https://safe.example/login?first=1",
+		"https://safe.example/login?second=2",
+	}}
+	got := prioritizedSandboxURLs(ev)
+	if len(got) != 1 || got[0] != "https://safe.example/login?first=1" {
+		t.Fatalf("prioritized URLs = %#v, want one normalized HTTPS target", got)
 	}
 }

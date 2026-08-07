@@ -35,6 +35,7 @@ umask 077
   echo "API_AUDIT_HMAC_KEY=$(openssl rand -hex 32)"
   echo "SMG_INGEST_HMAC_KEY=$(openssl rand -hex 32)"
   echo "POSTFIX_MYHOSTNAME=${POSTFIX_MYHOSTNAME_DEFAULT:-mx.example.com}"
+  echo "SMG_SYSTEM_FROM_ADDRESS=${SMG_SYSTEM_FROM_ADDRESS:-}"
   echo 'POSTFIX_MYNETWORKS="127.0.0.0/8 10.0.0.0/8 172.16.0.0/12"'
   echo "RSPAMD_PASSWORD=$(openssl rand -hex 16)"
   echo "RSPAMD_CONTROLLER_PASSWORD=$(openssl rand -hex 16)"
@@ -48,4 +49,4 @@ umask 077
 
 chmod 0600 "${env_file}"
 echo "Wrote ${env_file}."
-echo "Review POSTFIX_MYHOSTNAME, TLS_MODE, TLS_HOSTNAME, TLS_ACME_EMAIL, and optional seed admin values before first start."
+echo "Review POSTFIX_MYHOSTNAME, SMG_SYSTEM_FROM_ADDRESS, TLS_MODE, TLS_HOSTNAME, TLS_ACME_EMAIL, and optional seed admin values before first start."

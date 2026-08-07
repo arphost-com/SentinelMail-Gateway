@@ -27,6 +27,8 @@ const VERDICT_STYLE: Record<string, string> = {
   malicious: "border-danger/50 bg-danger/10 text-danger",
   suspicious: "border-warning/50 bg-warning/10 text-warning",
   clean: "border-success/50 bg-success/10 text-success",
+  unavailable: "border-warning/50 bg-warning/10 text-warning",
+  inconclusive: "border-warning/50 bg-warning/10 text-warning",
 };
 
 const STATE_STYLE: Record<string, string> = {
@@ -343,6 +345,12 @@ function summarise(j: ScanJob): string {
   if (j.state === "running") return "scanning…";
   if (j.state === "failed") return j.error ?? "failed";
   const r = (j.result ?? {}) as Record<string, unknown>;
+  if (j.verdict === "unavailable") return String(r["availability_reason"] ?? "AI provider is unavailable");
+  if (j.verdict === "inconclusive") return String(r["availability_reason"] ?? "AI analysis was inconclusive");
+  if (j.kind === "ai") {
+    const score = typeof r["score"] === "number" ? `${Math.round(Number(r["score"]) * 100)}%` : "no score";
+    return `${String(r["engine"] ?? "AI")} · ${score}`;
+  }
   const hits = (r["feed_hits"] as string[] | undefined) ?? [];
   const urls = (r["urls"] as string[] | undefined) ?? [];
   if (hits.length > 0) return `${hits.length} URL(s) matched URLhaus`;

@@ -10,6 +10,8 @@ SentinelMail is sold as infrastructure software, not shared-hosting software. It
 - **Plain-English role guides** live in [`docs/role-guides.md`](docs/role-guides.md) for end users, org admins, MSP admins, and super admins
 - **Customer handoff quick start** is available as [`docs/customer-quick-start.md`](docs/customer-quick-start.md) and [`docs/customer-quick-start.pdf`](docs/customer-quick-start.pdf)
 - **Security scanner review notes** live in [`docs/security-scans.md`](docs/security-scans.md)
+- **Phishing-brand intelligence sources and refresh behavior** live in [`docs/brand-intelligence.md`](docs/brand-intelligence.md)
+- **Campaign grouping and quarantine flood protection** are described in [`docs/campaign-protection.md`](docs/campaign-protection.md)
 - **Bug reports, fixes, and update flow** are covered in [`CONTRIBUTING.md`](CONTRIBUTING.md) and [`docs/contributing.md`](docs/contributing.md)
 - **In-app docs** at **Docs** in the sidebar once you're signed in
 - **This README** focuses on architecture, REST API, repo layout, and dev quickstart
@@ -90,7 +92,7 @@ The same plain-English guidance is available inside the app under **Docs** so cu
 **MVP 2 — shipped**
 - v1 **QR phishing**: pyzbar decode + URLhaus URL lookup
 - v2 **Browser sandbox**: headless Chromium via Playwright in a dedicated worker; screenshot + redirect + password-input + cross-origin-form heuristics
-- v3 **AI scoring**: Anthropic Claude (Haiku 4.5 default) with keyword-heuristic fallback when no API key is set
+- v3 **AI scoring**: Anthropic Claude (Haiku 4.5 default); missing-provider and provider-error states are reported explicitly as unavailable/inconclusive, with local heuristics retained only as supporting metadata
 - v4 **Outbound BEC**: recipient fan-out, distinct-domain count, off-hours, BEC-keyword heuristics
 - **Auto-trigger** from real mail: the Lua snippet is now baked into the rspamd image and auto-loads; every inbound message fans into the appropriate scan kinds with no operator action
 
@@ -251,6 +253,7 @@ These must exist before the API can read DB-backed settings, so they stay in `.e
 | `SMG_AI_MODEL`                                   | Optional — defaults to `claude-haiku-4-5-20251001`         |
 | `POSTFIX_MYHOSTNAME` / `POSTFIX_MYNETWORKS`      | Postfix initial config (also configurable at runtime)      |
 | `SMG_SMTP_LISTEN_IP`                             | Bind IP for SMTP (set to docker02's `10.10.10.93` when a system MTA holds 127.0.0.1:25) |
+| `SMG_SYSTEM_FROM_ADDRESS`                        | Optional deployment-owned From address for abuse reports and system email; overrides the UI value on startup |
 
 ### Runtime (UI: Settings → System tab)
 
@@ -261,6 +264,7 @@ Editable from the UI without restart; lives in `system_settings`. Add a new key 
 | `ui.brand_name`               | string | `SentinelMail Gateway`                       |
 | `mail.hostname`               | string | `mx.example.com`                             |
 | `mail.mynetworks`             | string | `127.0.0.0/8 10.0.0.0/8 172.16.0.0/12`       |
+| `mail.system_from_address`    | string | empty; falls back to the organization support address |
 | `message.retention_days`      | int    | `90`                                         |
 | `quarantine.default_action`   | enum   | `tag` (deliver/tag/quarantine/reject)        |
 
@@ -298,7 +302,7 @@ GET    /mail-logs
 GET    /mail-logs/{id}
 GET    /mail-logs/stats?window=24h
 
-GET    /smtp-events              (admin; Postfix-only rejects/deferrals/TLS)
+GET    /smtp-events              (admin; Postfix terminal outcomes and SMTP-only events)
 
 GET    /users
 POST   /users
@@ -339,10 +343,10 @@ The Go ingest handler:
 4. Fans out scan jobs:
    - **inbound** → one `ai` scan (subject + body)
    - **inbound + image attachments** → one `qr` scan per image (cap 5)
-   - **inbound + URLs** → one `sandbox` scan on the first URL
+   - **inbound + URLs** → sandbox scans for up to three distinct actionable CTA destinations
    - **outbound** (SASL-authed sender) → one `outbound` scan
 
-Caps inline: 16 KB body for AI, 5 attachments at 2 MB each for QR, 1 URL for sandbox. Errors during scan enqueue surface in the API response but never fail the mail ingest.
+Caps inline: 16 KB body for AI, 5 attachments at 2 MB each for QR, and 3 prioritized URLs for sandboxing. Images, tracking pixels, static assets, unsafe schemes, and unsubscribe links are excluded. Errors during scan enqueue surface in the API response but never fail the mail ingest.
 
 **Safety:** when `SMG_INGEST_HMAC_KEY` is empty, the Lua snippet detects it on startup and no-ops. No 401-storm in the api log, no impact on mail flow.
 
@@ -424,12 +428,13 @@ After the first pipeline succeeds and the stack is up:
 1. **Sign in.** The seeded admin password is in the deploy job log. Rotate immediately (Users → Reset password on yourself, or delete + reseed — see in-app Docs → MFA → "Lost device").
 2. **Enable MFA on the admin.** Settings → Account → Enable two-factor.
 3. **Register your first managed domain.** Sidebar → Domains → `+ New domain`. Without this, inbound mail for the domain is rejected as "unknown recipient domain" by the ingest.
-4. **(Optional) Enable Claude AI scoring.** Drop `ANTHROPIC_API_KEY=sk-ant-...` into `/home/debian/sentinelmail-gateway/deploy/docker/.env` and restart the worker:
+4. **Set the automated sender.** System Settings → Mail → Automated sender address. Hosted operators should use an address in their own SPF/DKIM-authenticated domain; customer support addresses remain reply/contact addresses and do not need SentinelMail added to customer SPF.
+5. **(Optional) Enable Claude AI scoring.** Drop `ANTHROPIC_API_KEY=sk-ant-...` into `/home/debian/sentinelmail-gateway/deploy/docker/.env` and restart the worker:
    ```bash
    sudo nano /home/debian/sentinelmail-gateway/deploy/docker/.env
    sudo -u gitlab-runner docker compose --env-file /home/debian/sentinelmail-gateway/deploy/docker/.env -f /home/debian/sentinelmail-gateway/deploy/docker/docker-compose.yml restart worker
    ```
-5. **Point DNS at the gateway.** Set MX records for your domain to docker02 (or whichever host you deployed on), with the next-hop gateway you configured under Sidebar → Gateways.
+6. **Point DNS at the gateway.** Set MX records for your domain to docker02 (or whichever host you deployed on), with the next-hop gateway you configured under Sidebar → Gateways.
 
 That's it. From here Rspamd auto-trigger fires on every message and the in-app **Docs** page (sidebar) explains day-to-day use.
 
@@ -467,8 +472,10 @@ Worker container isn't picking up. `docker compose logs worker / logs sandbox`. 
 ### Dashboard always shows zeros
 No mail processed yet (no real mail flowing) **or** recipient domain isn't registered. Add the domain on the Domains page and re-send.
 
-### AI scan shows `engine: heuristic-fallback`
-`ANTHROPIC_API_KEY` isn't set. See Operator setup step 4 above.
+### AI scan shows `unavailable`
+`ANTHROPIC_API_KEY` is not configured. The deterministic mail checks remain
+active, but the UI and system health deliberately do not represent the local
+heuristic metadata as a completed AI scan. See Operator setup step 5 above.
 
 ### Threat feed shows `error` in Settings
 See `last_refresh_err`. Usually a network blocker (Spamhaus rate-limit, no outbound HTTPS). Mail flow continues either way.

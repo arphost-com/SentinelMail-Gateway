@@ -11,5 +11,8 @@ import (
 // still works. The real implementation lives in internal/bootstrap so the
 // api serve loop can call the same code on startup.
 func seedDefaults(ctx context.Context, db *sql.DB) error {
+	if err := bootstrap.ApplyEnvironmentSettings(ctx, db); err != nil {
+		return err
+	}
 	return bootstrap.SeedIfEmpty(ctx, db)
 }

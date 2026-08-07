@@ -14,6 +14,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"net/mail"
 	"os"
 	"strings"
 
@@ -34,6 +35,40 @@ func Migrate(ctx context.Context, db *sql.DB) error {
 		return fmt.Errorf("bootstrap: migrate up: %w", err)
 	}
 	return nil
+}
+
+// ApplyEnvironmentSettings makes deployment-owned sender identity authoritative
+// when configured. Hosted operators can use one authenticated platform domain
+// without requiring every tenant to authorize the gateway in tenant SPF.
+func ApplyEnvironmentSettings(ctx context.Context, db *sql.DB) error {
+	addr, err := normalizedSystemFromAddress(os.Getenv("SMG_SYSTEM_FROM_ADDRESS"))
+	if err != nil {
+		return err
+	}
+	if addr == "" {
+		return nil
+	}
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO system_settings (organization_id, key, value)
+		VALUES (NULL, 'mail.system_from_address', to_jsonb($1::text))
+		ON CONFLICT (key) WHERE organization_id IS NULL
+		DO UPDATE SET value = EXCLUDED.value, updated_at = now()
+	`, addr); err != nil {
+		return fmt.Errorf("bootstrap: system from address: %w", err)
+	}
+	return nil
+}
+
+func normalizedSystemFromAddress(value string) (string, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "", nil
+	}
+	parsed, err := mail.ParseAddress(value)
+	if err != nil || parsed.Address == "" {
+		return "", fmt.Errorf("bootstrap: SMG_SYSTEM_FROM_ADDRESS must be a valid email address")
+	}
+	return strings.ToLower(parsed.Address), nil
 }
 
 // SeedIfEmpty creates the System organization and a super_admin user when
@@ -112,6 +147,9 @@ func MigrateAndSeed(ctx context.Context, dbURL string) error {
 	}
 	defer db.Close()
 	if err := Migrate(ctx, db); err != nil {
+		return err
+	}
+	if err := ApplyEnvironmentSettings(ctx, db); err != nil {
 		return err
 	}
 	return SeedIfEmpty(ctx, db)

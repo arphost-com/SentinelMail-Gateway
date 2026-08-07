@@ -133,6 +133,8 @@ services:
     build:
       context: ../..
       dockerfile: deploy/docker/api/Dockerfile
+      args:
+        SMG_VERSION: ${SMG_VERSION:-dev}
     depends_on:
       postgres:
         condition: service_healthy
@@ -146,6 +148,9 @@ services:
       SMG_AUDIT_HMAC_KEY: ${API_AUDIT_HMAC_KEY:?audit hmac key required (openssl rand -hex 32)}
       SMG_INGEST_HMAC_KEY: ${SMG_INGEST_HMAC_KEY:-}
       SMG_ENV: ${SMG_ENV:-docker}
+      # Optional deployment-owned sender for abuse reports and system mail.
+      # Its domain must authenticate this relay with aligned SPF or DKIM.
+      SMG_SYSTEM_FROM_ADDRESS: ${SMG_SYSTEM_FROM_ADDRESS:-}
       # Optional: pre-set the seeded super-admin. If unset on first run,
       # seed generates a random password and prints it on stdout. Ignored
       # on re-seed because seed exits early when an org already exists.

@@ -14,6 +14,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"sort"
 	"strings"
 	"time"
 
@@ -23,6 +24,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/redis/go-redis/v9"
 
+	"github.com/arphost/sentinelmail-gateway/internal/brandintel"
 	"github.com/arphost/sentinelmail-gateway/internal/challenge"
 	"github.com/arphost/sentinelmail-gateway/internal/classifier"
 	"github.com/arphost/sentinelmail-gateway/internal/httpapi/httpx"
@@ -75,10 +77,11 @@ type IngestHandler struct {
 	DB     *pgxpool.Pool
 	Redis  *redis.Client // for MVP 2 scan auto-trigger; nil disables it
 	Secret []byte        // shared with rspamd via SMG_INGEST_HMAC_KEY
+	Brands *brandintel.Catalog
 }
 
-func MountIngest(r chi.Router, db *pgxpool.Pool, rdb *redis.Client, secret []byte) {
-	h := &IngestHandler{DB: db, Redis: rdb, Secret: secret}
+func MountIngest(r chi.Router, db *pgxpool.Pool, rdb *redis.Client, secret []byte, brands *brandintel.Catalog) {
+	h := &IngestHandler{DB: db, Redis: rdb, Secret: secret, Brands: brands}
 	r.Post("/events", h.handle)
 	r.Post("/sender-policy", h.senderPolicy)
 }
@@ -115,6 +118,20 @@ func (h *IngestHandler) handle(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteError(w, http.StatusInternalServerError, "policy resolve: "+err.Error())
 		return
 	}
+	brandProfiles := protectedBrandProfiles
+	if h.Brands != nil {
+		if profiles, loadErr := h.Brands.ProtectedProfiles(r.Context()); loadErr == nil && len(profiles) > 0 {
+			brandProfiles = make([]protectedBrandProfile, 0, len(profiles))
+			for _, profile := range profiles {
+				brandProfiles = append(brandProfiles, protectedBrandProfile{
+					name:          profile.Name,
+					terms:         profile.Aliases,
+					senderDomains: profile.OfficialDomains,
+					cues:          profile.Cues,
+				})
+			}
+		}
+	}
 
 	disposition, reason := decide(pol, &ev)
 	disposition, reason = applyDeliveryStatusNotificationDisposition(disposition, reason, &ev)
@@ -128,7 +145,7 @@ func (h *IngestHandler) handle(w http.ResponseWriter, r *http.Request) {
 	disposition, reason = applyRspamdSenderBlocklist(disposition, reason, &ev)
 	disposition, reason = applyReputationBlocklist(disposition, reason, &ev)
 	disposition, reason = applyCommonScamDetectionWithPolicy(disposition, reason, pol, &ev)
-	disposition, reason = applyBrandImpersonationDetection(disposition, reason, senderAction, pol, &ev)
+	disposition, reason = applyBrandImpersonationDetectionWithProfiles(disposition, reason, senderAction, pol, &ev, brandProfiles)
 	disposition, reason = applyThreatSignalDispositionWithPolicy(disposition, reason, pol, &ev)
 	disposition, reason = applySenderListAction(disposition, reason, senderAction, pol.SenderBlacklistEnabled())
 	disposition, reason = applyChallengeResponseHold(disposition, reason, pol, senderAction, &ev)
@@ -140,6 +157,34 @@ func (h *IngestHandler) handle(w http.ResponseWriter, r *http.Request) {
 	disposition, reason = applySenderListAction(disposition, reason, senderAction, pol.SenderBlacklistEnabled())
 	disposition, reason = applyQuarantineFirst(disposition, reason, &ev)
 
+	threatClass := ""
+	if disposition == "quarantined" {
+		threatClass = classifyThreatWithProfiles(&ev, brandAnalysisOptionsFromPolicy(pol), pol, brandProfiles)
+		if challenge.IsPendingReason(reason) {
+			threatClass = "CHALLENGE_RESPONSE"
+		}
+	}
+	highConfidence := highConfidenceCampaign(disposition, reason, threatClass)
+	campaign, err := recordCampaign(r.Context(), h.DB, orgID, domainID, disposition, threatClass, &ev)
+	if err != nil {
+		httpx.WriteError(w, http.StatusInternalServerError, "campaign update: "+err.Error())
+		return
+	}
+	campaignAction := "aggregate"
+	suppressDuplicate := highConfidence && campaign.MessageCount > 1 && campaign.HasRepresentative
+	if highConfidence && campaign.MessageCount >= int64(pol.CampaignThreshold()) {
+		campaignAction = pol.CampaignAction()
+		switch campaignAction {
+		case "reject":
+			disposition = "rejected"
+			reason = "high-confidence campaign threshold reached; rejected by tenant policy"
+			suppressDuplicate = true
+		case "discard":
+			reason = "high-confidence campaign threshold reached; accepted and discarded by tenant policy"
+			suppressDuplicate = campaign.MessageCount > 1
+		}
+	}
+
 	// Persist mail log.
 	symbolsJSON := []byte("{}")
 	if len(ev.Symbols) > 0 {
@@ -147,60 +192,94 @@ func (h *IngestHandler) handle(w http.ResponseWriter, r *http.Request) {
 	}
 	var mailLogID uuid.UUID
 	err = h.DB.QueryRow(r.Context(), `
-		INSERT INTO mail_logs (organization_id, domain_id, queue_id, message_id, direction,
+		INSERT INTO mail_logs (organization_id, domain_id, campaign_id, campaign_copy_number,
+		                       queue_id, message_id, direction,
 		                       from_addr, to_addrs, client_ip, helo, subject, size_bytes,
 		                       rspamd_score, rspamd_action, symbols, disposition, reason, received_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, NULLIF($8,'')::inet, $9, $10, $11,
-		        $12, $13, $14::jsonb, $15::mail_disposition, $16, now())
+		VALUES ($1, $2, NULLIF($3, '00000000-0000-0000-0000-000000000000'::uuid), NULLIF($4,0),
+		        $5, $6, $7, $8, $9, NULLIF($10,'')::inet, $11, $12, $13,
+		        $14, $15, $16::jsonb, $17::mail_disposition, $18, now())
 		RETURNING id
-	`, orgID, domainID, ev.QueueID, ev.MessageID, ev.Direction,
+	`, orgID, domainID, campaign.ID, campaign.MessageCount, ev.QueueID, ev.MessageID, ev.Direction,
 		ev.From, ev.To, ev.ClientIP, ev.Helo, ev.Subject, ev.SizeBytes,
 		ev.Score, ev.Action, symbolsJSON, disposition, reason).Scan(&mailLogID)
 	if err != nil {
 		httpx.WriteError(w, http.StatusInternalServerError, "log insert: "+err.Error())
 		return
 	}
+	if campaign.ID != uuid.Nil {
+		_, _ = h.DB.Exec(r.Context(), `
+			UPDATE mail_campaigns
+			   SET representative_mail_log_id = COALESCE(representative_mail_log_id, $2),
+			       latest_disposition = $3,
+			       updated_at = now()
+			 WHERE id = $1
+		`, campaign.ID, mailLogID, disposition)
+	}
 	if err := h.insertMailboxCopies(r.Context(), orgID, domainID, mailLogID, disposition, &ev); err != nil {
 		httpx.WriteError(w, http.StatusInternalServerError, "mailbox insert: "+err.Error())
 		return
 	}
-	if err := h.insertMailLogBlob(r.Context(), orgID, mailLogID, &ev); err != nil {
+	if !suppressDuplicate {
+		err = h.insertMailLogBlob(r.Context(), orgID, mailLogID, &ev)
+	}
+	if err != nil {
 		httpx.WriteError(w, http.StatusInternalServerError, "mail log blob insert: "+err.Error())
 		return
 	}
 
 	// Quarantine if needed.
-	if disposition == "quarantined" {
+	if disposition == "quarantined" && !suppressDuplicate {
 		var quarantineID uuid.UUID
-		threatClass := classifyThreat(&ev)
-		if challenge.IsPendingReason(reason) {
-			threatClass = "CHALLENGE_RESPONSE"
+		var quarantineCampaignID *uuid.UUID
+		if highConfidence && campaign.ID != uuid.Nil {
+			quarantineCampaignID = &campaign.ID
 		}
 		retentionDays := settings.MessageRetentionDaysForDomain(r.Context(), h.DB, *orgID, *domainID)
 		err = h.DB.QueryRow(r.Context(), `
 			INSERT INTO quarantine_entries
 			  (organization_id, mail_log_id, domain_id, from_addr, to_addr, subject,
-			   rspamd_score, threat_class, storage_key, size_bytes, expires_at, received_at)
+			   rspamd_score, threat_class, storage_key, size_bytes, expires_at, received_at, campaign_id)
 			VALUES ($1, $2, $3, NULLIF($4,''), $5, NULLIF($6,''),
-			        $7, $8, $9, NULLIF($10,0), now() + ($11::int * interval '1 day'), now())
+			        $7, $8, $9, NULLIF($10,0), now() + ($11::int * interval '1 day'), now(), $12)
+			ON CONFLICT DO NOTHING
 			RETURNING id
 		`, orgID, mailLogID, domainID, ev.From, ev.To[0], ev.Subject,
-			ev.Score, threatClass, storageKey(&ev), ev.SizeBytes, retentionDays).Scan(&quarantineID)
-		if err != nil {
+			ev.Score, threatClass, storageKey(&ev), ev.SizeBytes, retentionDays, quarantineCampaignID).Scan(&quarantineID)
+		if errors.Is(err, pgx.ErrNoRows) {
+			suppressDuplicate = true
+		} else if err != nil {
 			httpx.WriteError(w, http.StatusInternalServerError, "quarantine insert: "+err.Error())
 			return
 		}
-		if err := h.insertQuarantineBlob(r.Context(), orgID, mailLogID, quarantineID, &ev); err != nil {
-			httpx.WriteError(w, http.StatusInternalServerError, "quarantine blob insert: "+err.Error())
-			return
+		if !suppressDuplicate {
+			if campaign.ID != uuid.Nil {
+				_, _ = h.DB.Exec(r.Context(), `
+					UPDATE mail_campaigns
+					   SET representative_quarantine_id = COALESCE(representative_quarantine_id, $2),
+					       updated_at = now()
+					 WHERE id = $1
+				`, campaign.ID, quarantineID)
+			}
+			if err := h.insertQuarantineBlob(r.Context(), orgID, mailLogID, quarantineID, &ev); err != nil {
+				httpx.WriteError(w, http.StatusInternalServerError, "quarantine blob insert: "+err.Error())
+				return
+			}
 		}
-		if threatClass == "PHISHING" {
+		if !suppressDuplicate && threatClass == "PHISHING" {
+			if campaign.ID != uuid.Nil {
+				_, _ = h.DB.Exec(r.Context(), `
+					UPDATE mail_campaigns
+					   SET last_alert_at = now(), updated_at = now()
+					 WHERE id = $1
+				`, campaign.ID)
+			}
 			go func(id uuid.UUID) {
 				ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 				defer cancel()
 				_ = notifications.SendPhishingAlertForMailLog(ctx, h.DB, id)
 			}(mailLogID)
-		} else if threatClass == "CHALLENGE_RESPONSE" {
+		} else if !suppressDuplicate && threatClass == "CHALLENGE_RESPONSE" {
 			go func(id uuid.UUID) {
 				ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 				defer cancel()
@@ -208,22 +287,37 @@ func (h *IngestHandler) handle(w http.ResponseWriter, r *http.Request) {
 			}(mailLogID)
 		}
 	}
+	if suppressDuplicate && campaign.ID != uuid.Nil {
+		_, _ = h.DB.Exec(r.Context(), `
+			UPDATE mail_campaigns
+			   SET suppressed_count = suppressed_count + 1, updated_at = now()
+			 WHERE id = $1
+		`, campaign.ID)
+	}
 
 	// MVP 2 — auto-spawn scans based on what rspamd extracted. Best-effort;
 	// errors here are logged via the response field but never fail the
 	// ingest call (mail flow must not depend on scan availability).
-	spawned, scanErr := h.spawnScans(r.Context(), orgID, mailLogID, &ev)
+	var spawned []string
+	var scanErr error
+	if !suppressDuplicate {
+		spawned, scanErr = h.spawnScans(r.Context(), orgID, mailLogID, &ev)
+	}
 	scanErrStr := ""
 	if scanErr != nil {
 		scanErrStr = scanErr.Error()
 	}
 
 	httpx.WriteJSON(w, http.StatusAccepted, map[string]any{
-		"mail_log_id":   mailLogID,
-		"disposition":   disposition,
-		"scans_spawned": spawned,
-		"scan_error":    scanErrStr,
-		"policy":        pol.Name,
+		"mail_log_id":         mailLogID,
+		"disposition":         disposition,
+		"scans_spawned":       spawned,
+		"scan_error":          scanErrStr,
+		"policy":              pol.Name,
+		"campaign_id":         campaign.ID,
+		"campaign_count":      campaign.MessageCount,
+		"campaign_action":     campaignAction,
+		"campaign_suppressed": suppressDuplicate,
 	})
 }
 
@@ -322,7 +416,7 @@ const (
 const (
 	maxAttachmentSize  = 2 << 20 // 2 MiB per image
 	maxAttachmentScans = 5
-	maxURLScans        = 1       // sandbox is heavy; only the first URL
+	maxURLScans        = 3       // sandbox is heavy; rank and cap CTA destinations
 	maxBodyForAI       = 16_000  // chars
 	maxRawMessageBytes = 8 << 20 // 8 MiB raw .eml, base64-encoded in JSON
 )
@@ -380,15 +474,11 @@ func (h *IngestHandler) spawnScans(ctx context.Context, orgID *uuid.UUID, mailLo
 		imageCount++
 	}
 
-	// Sandbox the first URL (heavy; one per message keeps Chromium pool sane).
-	for i, url := range ev.URLs {
-		if i >= maxURLScans {
-			break
-		}
-		if !isHTTPURL(url) {
-			continue
-		}
-		if err := h.enqueue(ctx, *orgID, &mailLogID, "sandbox", map[string]any{"url": url}); err != nil && firstErr == nil {
+	// Rank a small set of actionable links instead of trusting Rspamd's
+	// arbitrary URL order. Images, pixels, assets, and unsubscribe controls
+	// are poor browser-sandbox targets and can hide the actual CTA.
+	for _, targetURL := range prioritizedSandboxURLs(ev) {
+		if err := h.enqueue(ctx, *orgID, &mailLogID, "sandbox", map[string]any{"url": targetURL}); err != nil && firstErr == nil {
 			firstErr = err
 		} else {
 			spawned = append(spawned, "sandbox")
@@ -650,7 +740,7 @@ func applyCommonScamDetectionWithPolicy(disposition, reason string, pol *policie
 			return disposition, reason
 		}
 		return "quarantined", "detected " + strings.ToLower(analysis.EmailType)
-	case "Payment support scam", "Tax document phishing", "Medical miracle scam", "Malware lure", "Health miracle spam", "Home services lead-gen spam":
+	case "Wallet access phishing", "Payment support scam", "Tax document phishing", "Medical miracle scam", "Malware lure", "Health miracle spam", "Home services lead-gen spam":
 		return "quarantined", "detected " + strings.ToLower(analysis.EmailType)
 	default:
 		return disposition, reason
@@ -658,6 +748,10 @@ func applyCommonScamDetectionWithPolicy(disposition, reason string, pol *policie
 }
 
 func applyBrandImpersonationDetection(disposition, reason, senderAction string, pol *policies.Policy, ev *Event) (string, string) {
+	return applyBrandImpersonationDetectionWithProfiles(disposition, reason, senderAction, pol, ev, protectedBrandProfiles)
+}
+
+func applyBrandImpersonationDetectionWithProfiles(disposition, reason, senderAction string, pol *policies.Policy, ev *Event, profiles []protectedBrandProfile) (string, string) {
 	if disposition == "rejected" || disposition == "quarantined" {
 		return disposition, reason
 	}
@@ -670,7 +764,7 @@ func applyBrandImpersonationDetection(disposition, reason, senderAction string, 
 	if ev != nil && strings.EqualFold(ev.Direction, "outbound") {
 		return disposition, reason
 	}
-	analysis := analyzeBrandImpersonation(ev, brandAnalysisOptionsFromPolicy(pol))
+	analysis := analyzeBrandImpersonationWithProfiles(ev, brandAnalysisOptionsFromPolicy(pol), profiles)
 	if analysis.Quarantine {
 		return "quarantined", analysis.Reason()
 	}
@@ -906,11 +1000,71 @@ func hasReputationBlocklistHit(ev *Event) bool {
 	}
 	for key, value := range ev.Symbols {
 		s := strings.ToUpper(key)
-		if isReputationBlockSymbol(s) && symbolScore(value) > 0 {
+		if isReputationBlockSymbol(s) && symbolScore(value) > 0 &&
+			!isAuthenticatedFirstPartyURLReputationHit(s, value, ev) {
 			return true
 		}
 	}
 	return false
+}
+
+// RSPAMD_URIBL is a broad URL-reputation heuristic rather than a feed-specific
+// malware verdict. Do not turn it into a hard quarantine when DMARC passed and
+// every listed URL domain is the authenticated sender's own domain or parent.
+// Feed-specific URLhaus/OpenPhish hits and unrelated URL domains still block.
+func isAuthenticatedFirstPartyURLReputationHit(symbol string, value any, ev *Event) bool {
+	if !strings.EqualFold(symbol, "RSPAMD_URIBL") || ev == nil || !authSignals(ev).DMARCPass {
+		return false
+	}
+	senderDomain := emailDomain(ev.From)
+	if senderDomain == "" {
+		return false
+	}
+	options := symbolOptions(value)
+	if len(options) == 0 {
+		return false
+	}
+	matched := false
+	for _, option := range options {
+		domain, _, _ := strings.Cut(strings.ToLower(strings.TrimSpace(option)), ":")
+		domain = strings.Trim(domain, ".")
+		if domain == "" {
+			continue
+		}
+		matched = true
+		if !domainsRelated(senderDomain, domain) {
+			return false
+		}
+	}
+	return matched
+}
+
+func domainsRelated(a, b string) bool {
+	a = strings.Trim(strings.ToLower(a), ".")
+	b = strings.Trim(strings.ToLower(b), ".")
+	return a != "" && b != "" &&
+		(a == b || strings.HasSuffix(a, "."+b) || strings.HasSuffix(b, "."+a))
+}
+
+func symbolOptions(value any) []string {
+	obj, ok := value.(map[string]any)
+	if !ok {
+		return nil
+	}
+	switch values := obj["options"].(type) {
+	case []string:
+		return values
+	case []any:
+		out := make([]string, 0, len(values))
+		for _, value := range values {
+			if option, ok := value.(string); ok {
+				out = append(out, option)
+			}
+		}
+		return out
+	default:
+		return nil
+	}
 }
 
 func hasReputationAllowlistHit(ev *Event) bool {
@@ -1014,6 +1168,10 @@ func classifyThreatWithBrandOptions(ev *Event, brandOpts brandAnalysisOptions) s
 }
 
 func classifyThreatWithOptions(ev *Event, brandOpts brandAnalysisOptions, pol *policies.Policy) string {
+	return classifyThreatWithProfiles(ev, brandOpts, pol, protectedBrandProfiles)
+}
+
+func classifyThreatWithProfiles(ev *Event, brandOpts brandAnalysisOptions, pol *policies.Policy, profiles []protectedBrandProfile) string {
 	if ev == nil {
 		return ""
 	}
@@ -1021,13 +1179,14 @@ func classifyThreatWithOptions(ev *Event, brandOpts brandAnalysisOptions, pol *p
 		s := strings.ToUpper(sym)
 		switch {
 		case strings.Contains(s, "PHISH") && symbolScore(value) > 0:
-			if isAuthenticatedProtectedBrandSender(ev) && isGenericPhishingHeuristicSymbol(s) {
+			if isAuthenticatedProtectedBrandSenderWithProfiles(ev, profiles) && isGenericPhishingHeuristicSymbol(s) {
 				continue
 			}
 			return "PHISHING"
 		case (strings.Contains(s, "VIRUS") || strings.Contains(s, "CLAM")) && symbolScore(value) > 0:
 			return "VIRUS"
-		case isReputationBlockSymbol(s) && symbolScore(value) > 0:
+		case isReputationBlockSymbol(s) && symbolScore(value) > 0 &&
+			!isAuthenticatedFirstPartyURLReputationHit(s, value, ev):
 			return "REPUTATION"
 		}
 	}
@@ -1035,10 +1194,10 @@ func classifyThreatWithOptions(ev *Event, brandOpts brandAnalysisOptions, pol *p
 	if commonScamDetectionAllows(pol, analysis.EmailType) {
 		switch analysis.EmailType {
 		case "Credential phishing":
-			if !isAuthenticatedProtectedBrandSender(ev) {
+			if !isAuthenticatedProtectedBrandSenderWithProfiles(ev, profiles) {
 				return "PHISHING"
 			}
-		case "Payment support scam", "Tax document phishing", "Medical miracle scam":
+		case "Wallet access phishing", "Payment support scam", "Tax document phishing", "Medical miracle scam":
 			return "PHISHING"
 		case "Malware lure":
 			return "MALWARE"
@@ -1046,7 +1205,7 @@ func classifyThreatWithOptions(ev *Event, brandOpts brandAnalysisOptions, pol *p
 			return "SPAM"
 		}
 	}
-	if analysis := analyzeBrandImpersonation(ev, brandOpts); analysis.Quarantine {
+	if analysis := analyzeBrandImpersonationWithProfiles(ev, brandOpts, profiles); analysis.Quarantine {
 		return "PHISHING"
 	}
 	if ev.Score >= 10 {
@@ -1069,6 +1228,8 @@ func commonScamDetectionAllows(pol *policies.Policy, emailType string) bool {
 func commonScamCategorySlug(emailType string) string {
 	switch emailType {
 	case "Credential phishing":
+		return "credential_phishing"
+	case "Wallet access phishing":
 		return "credential_phishing"
 	case "Payment support scam":
 		return "payment_support"
@@ -1210,6 +1371,10 @@ func brandImpersonationHit(ev *Event) string {
 }
 
 func analyzeBrandImpersonation(ev *Event, opts brandAnalysisOptions) brandAnalysis {
+	return analyzeBrandImpersonationWithProfiles(ev, opts, protectedBrandProfiles)
+}
+
+func analyzeBrandImpersonationWithProfiles(ev *Event, opts brandAnalysisOptions, profiles []protectedBrandProfile) brandAnalysis {
 	if !opts.Enabled || ev == nil {
 		return brandAnalysis{}
 	}
@@ -1218,7 +1383,7 @@ func analyzeBrandImpersonation(ev *Event, opts brandAnalysisOptions) brandAnalys
 		return brandAnalysis{}
 	}
 	var best brandAnalysis
-	for _, profile := range protectedBrandProfiles {
+	for _, profile := range profiles {
 		if domainMatchesAny(fromDomain, profile.senderDomains) {
 			continue
 		}
@@ -1239,16 +1404,34 @@ func scoreBrandClaim(ev *Event, fromDomain string, profile protectedBrandProfile
 	body := suspiciousText(ev.BodyText)
 	combined := strings.TrimSpace(subject + " " + body)
 	analysis := brandAnalysis{Brand: profile.name}
+	displayNameClaim := containsAny(fromName, profile.terms)
+	subjectClaim := containsAny(subject, profile.terms)
+	bodyClaim := containsAny(body, profile.terms)
+	pressureClaim := (subjectClaim || bodyClaim) &&
+		containsAny(combined, accountLossPressurePhrases) &&
+		containsAny(combined, updateDetailsCTAPhrases)
+	authenticatedNewsletter := authSignals(ev).DMARCPass &&
+		strings.TrimSpace(ev.ListUnsubscribe) != "" &&
+		!displayNameClaim && !pressureClaim
 
-	if opts.DisplayNameEnabled && containsAny(fromName, profile.terms) {
+	if opts.DisplayNameEnabled && displayNameClaim {
 		analysis.Score += 80
 		analysis.Signals = append(analysis.Signals, "display name claims "+profile.name)
 	}
-	if opts.SubjectEnabled && containsAny(combined, profile.terms) && containsAny(combined, profile.cues) {
+	if opts.SubjectEnabled && subjectClaim && containsAny(combined, profile.cues) {
 		analysis.Score += 45
 		analysis.Signals = append(analysis.Signals, "message claims "+profile.name+" with sensitive context")
 	}
-	if opts.LinkMismatchEnabled && containsAny(combined, profile.terms) {
+	if pressureClaim {
+		analysis.Score += 80
+		analysis.Signals = append(analysis.Signals, "account or payment pressure asks the recipient to update details")
+	}
+	// A brand mentioned only in ordinary body copy is not an impersonation
+	// claim. Newsletters, portfolio summaries, receipts, and integrations often
+	// mention other brands and link to unrelated social or app-store domains.
+	// Only use link mismatch after an explicit display-name/subject claim or a
+	// high-risk body claim containing both pressure and an account-update CTA.
+	if opts.LinkMismatchEnabled && (displayNameClaim || subjectClaim || pressureClaim) && !authenticatedNewsletter {
 		if host := firstMismatchedURLHost(ev, fromDomain, profile); host != "" {
 			analysis.Score += 45
 			analysis.Signals = append(analysis.Signals, "link points to unrelated domain "+host)
@@ -1271,7 +1454,7 @@ func firstMismatchedURLHost(ev *Event, fromDomain string, profile protectedBrand
 	if ev == nil {
 		return ""
 	}
-	for _, raw := range ev.URLs {
+	for _, raw := range prioritizedSandboxURLs(ev) {
 		parsed, err := url.Parse(strings.TrimSpace(raw))
 		if err != nil || parsed.Scheme == "" || parsed.Hostname() == "" {
 			continue
@@ -1288,7 +1471,108 @@ func firstMismatchedURLHost(ev *Event, fromDomain string, profile protectedBrand
 	return ""
 }
 
+var accountLossPressurePhrases = []string{
+	"payment failed", "can't process your payment", "cannot process your payment",
+	"payment declined", "billing issue", "account suspended", "account locked",
+	"account restricted", "account will be closed", "lose access", "loss of access",
+	"subscription will end", "subscription expired", "final reminder", "action required",
+	"pending verification", "permanent loss",
+}
+
+var updateDetailsCTAPhrases = []string{
+	"update details", "update your details", "update payment", "update billing",
+	"verify account", "verify your account", "confirm account", "confirm your information",
+	"restore access", "reactivate", "sign in", "log in", "login", "click below",
+}
+
+type sandboxURLCandidate struct {
+	raw   string
+	score int
+	order int
+}
+
+func prioritizedSandboxURLs(ev *Event) []string {
+	if ev == nil {
+		return nil
+	}
+	candidates := make([]sandboxURLCandidate, 0, len(ev.URLs))
+	seen := map[string]struct{}{}
+	for order, raw := range ev.URLs {
+		raw = strings.TrimSpace(raw)
+		if !isHTTPURL(raw) {
+			continue
+		}
+		parsed, err := url.Parse(raw)
+		if err != nil {
+			continue
+		}
+		normalized := strings.ToLower(parsed.Scheme + "://" + parsed.Host + parsed.EscapedPath())
+		if _, exists := seen[normalized]; exists {
+			continue
+		}
+		seen[normalized] = struct{}{}
+		candidates = append(candidates, sandboxURLCandidate{
+			raw: raw, score: sandboxURLPriority(parsed, ev), order: order,
+		})
+	}
+	sort.SliceStable(candidates, func(i, j int) bool {
+		if candidates[i].score == candidates[j].score {
+			return candidates[i].order < candidates[j].order
+		}
+		return candidates[i].score > candidates[j].score
+	})
+	actionable := candidates[:0]
+	for _, candidate := range candidates {
+		if candidate.score > 0 {
+			actionable = append(actionable, candidate)
+		}
+	}
+	candidates = actionable
+	if len(candidates) > maxURLScans {
+		candidates = candidates[:maxURLScans]
+	}
+	out := make([]string, 0, len(candidates))
+	for _, candidate := range candidates {
+		out = append(out, candidate.raw)
+	}
+	return out
+}
+
+func sandboxURLPriority(parsed *url.URL, ev *Event) int {
+	value := strings.ToLower(parsed.Hostname() + " " + parsed.EscapedPath() + " " + parsed.RawQuery)
+	score := 10
+	if containsAny(value, []string{
+		"login", "log-in", "signin", "sign-in", "account", "verify", "verification",
+		"secure", "security", "auth", "password", "billing", "payment", "update",
+		"confirm", "reactivate", "restore", "reset", "checkout",
+	}) {
+		score += 100
+	}
+	if containsAny(value, []string{"click", "redirect", "link", "/ls/", "/r/"}) {
+		score += 35
+	}
+	path := strings.ToLower(parsed.EscapedPath())
+	if containsAny(path, []string{
+		".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".ico", ".css", ".js",
+		".woff", ".woff2", ".ttf", ".mp4", ".pdf",
+	}) {
+		score -= 200
+	}
+	if containsAny(value, []string{"pixel", "tracking", "track/open", "open.gif", "beacon", "spacer"}) {
+		score -= 150
+	}
+	if containsAny(value, []string{"unsubscribe", "optout", "opt-out", "preferences"}) ||
+		strings.Contains(strings.ToLower(ev.ListUnsubscribe), parsed.Hostname()) {
+		score -= 250
+	}
+	return score
+}
+
 func isAuthenticatedProtectedBrandSender(ev *Event) bool {
+	return isAuthenticatedProtectedBrandSenderWithProfiles(ev, protectedBrandProfiles)
+}
+
+func isAuthenticatedProtectedBrandSenderWithProfiles(ev *Event, profiles []protectedBrandProfile) bool {
 	if ev == nil || !authSignals(ev).DMARCPass {
 		return false
 	}
@@ -1296,7 +1580,7 @@ func isAuthenticatedProtectedBrandSender(ev *Event) bool {
 	if fromDomain == "" {
 		return false
 	}
-	for _, profile := range protectedBrandProfiles {
+	for _, profile := range profiles {
 		if domainMatchesAny(fromDomain, profile.senderDomains) {
 			return true
 		}

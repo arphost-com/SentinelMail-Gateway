@@ -7,7 +7,7 @@ import { ColumnDef, DataTable } from "../components/ui/DataTable";
 import { HelpTooltip } from "../components/ui/HelpTooltip";
 import { Modal } from "../components/ui/Modal";
 import { ScamGuidance } from "../components/ui/ScamGuidance";
-import { SpoofWarning } from "../components/ui/SpoofWarning";
+import { senderAuthLabel, SpoofWarning } from "../components/ui/SpoofWarning";
 import { confirmDanger } from "../components/ui/confirm";
 
 interface MailboxMessage {
@@ -29,6 +29,7 @@ interface MailboxMessage {
   verdict_at?: string;
   expires_at?: string;
   received_at: string;
+  held_copies: number;
 }
 
 interface UnsubscribeInfo {
@@ -446,10 +447,14 @@ export function MailboxPage() {
                   <dt className="text-subtle">Type</dt>
                   <dd className="col-span-2">{detail.email_type}</dd>
                   <dt className="text-subtle">Sender auth</dt>
-                  <dd className="col-span-2">{detail.spoof_warning ? "Possible spoof" : "No spoof signal detected"}</dd>
+                  <dd className="col-span-2">{senderAuthLabel(detail)}</dd>
                   <dt className="text-subtle">Mailing list</dt>
                   <dd className="col-span-2">
-                    {detail.unsubscribe?.available ? (
+                    {["phishing", "malware"].includes(detail.verdict) ? (
+                      <span className="text-warning">
+                        Unsubscribe disabled because attacker-supplied controls are unsafe
+                      </span>
+                    ) : detail.unsubscribe?.available ? (
                       <span>
                         Unsubscribe available{detail.unsubscribe.one_click ? " (one-click supported by sender)" : ""}
                       </span>
@@ -542,22 +547,26 @@ export function MailboxPage() {
                   <HelpTooltip text={verdictHelp(v.value)} />
                 </span>
               ))}
-              <Button
-                size="sm"
-                variant="secondary"
-                disabled={mailLogAction.isPending}
-                onClick={() => mailLogAction.mutate({ mailLogID: detail.mail_log_id, action: "release" })}
-              >
-                Release
-              </Button>
-              <Button
-                size="sm"
-                variant="danger"
-                disabled={mailLogAction.isPending}
-                onClick={() => confirmDanger("Delete held quarantine copies for this inbox message?") && mailLogAction.mutate({ mailLogID: detail.mail_log_id, action: "delete-held" })}
-              >
-                Delete held
-              </Button>
+              {detail.held_copies > 0 && (
+                <>
+                  <Button
+                    size="sm"
+                    variant="secondary"
+                    disabled={mailLogAction.isPending}
+                    onClick={() => mailLogAction.mutate({ mailLogID: detail.mail_log_id, action: "release" })}
+                  >
+                    Release {detail.held_copies > 1 ? `${detail.held_copies} held copies` : "held copy"}
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="danger"
+                    disabled={mailLogAction.isPending}
+                    onClick={() => confirmDanger("Delete held quarantine copies for this inbox message?") && mailLogAction.mutate({ mailLogID: detail.mail_log_id, action: "delete-held" })}
+                  >
+                    Delete {detail.held_copies > 1 ? `${detail.held_copies} held copies` : "held copy"}
+                  </Button>
+                </>
+              )}
               <Button
                 size="sm"
                 variant="danger"

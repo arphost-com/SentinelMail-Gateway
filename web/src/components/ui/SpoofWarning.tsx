@@ -4,6 +4,13 @@ export interface SpoofWarningData {
   spoof_signals?: string[];
 }
 
+export function senderAuthLabel(item: SpoofWarningData): string {
+  if (item.spoof_warning || item.auth_status === "suspected_spoof") return "Authentication failed or suspicious";
+  if (item.auth_status === "authenticated") return "Authenticated";
+  if (item.auth_status === "missing") return "SPF, DKIM, and DMARC results unavailable";
+  return "Authentication status unavailable";
+}
+
 export function SpoofBadge({ item }: { item: SpoofWarningData }) {
   if (!item.spoof_warning) return null;
   return (

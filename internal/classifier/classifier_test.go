@@ -42,6 +42,13 @@ func TestAnalyzeCommonScamDetectsHomoglyphTaxDocumentPhishing(t *testing.T) {
 	}
 }
 
+func TestAnalyzeCommonScamDetectsHomoglyphWalletAccessPhishing(t *testing.T) {
+	got := AnalyzeCommonScam("Restore Full Ԝаllеt Access — Sync Now", "")
+	if got.EmailType != "Wallet access phishing" {
+		t.Fatalf("EmailType = %q, want Wallet access phishing", got.EmailType)
+	}
+}
+
 func TestAnalyzeCommonScamDetectsPaymentSupportPhoneScam(t *testing.T) {
 	body := `Hello Customer,
 

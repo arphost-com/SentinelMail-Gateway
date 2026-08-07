@@ -54,6 +54,19 @@ func TestParseUnsubscribeInfoReturnsNilWhenNoSafeTargets(t *testing.T) {
 	}
 }
 
+func TestUnsubscribeAllowedBlocksPhishingAndMalware(t *testing.T) {
+	for _, verdict := range []string{"phishing", "PHISHING", " malware "} {
+		if unsubscribeAllowed(verdict) {
+			t.Fatalf("unsubscribeAllowed(%q) = true, want false", verdict)
+		}
+	}
+	for _, verdict := range []string{"other", "not_spam", "spam", ""} {
+		if !unsubscribeAllowed(verdict) {
+			t.Fatalf("unsubscribeAllowed(%q) = false, want true", verdict)
+		}
+	}
+}
+
 func TestParseMailtoUnsubscribe(t *testing.T) {
 	to, subject, body, err := parseMailtoUnsubscribe(
 		`mailto:list@example.com?subject=remove%20me&body=unsubscribe%0Athanks`,

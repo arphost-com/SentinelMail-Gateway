@@ -26,6 +26,7 @@ const (
 	KindDomain Kind = "domain"
 	KindURL    Kind = "url"
 	KindHash   Kind = "hash"
+	KindBrand  Kind = "brand"
 )
 
 // Result is what Lookup returns. Hit=false is the safe default.
@@ -221,6 +222,8 @@ func refreshInterval(f Feed) time.Duration {
 		return 30 * time.Minute
 	case KindIP:
 		return 6 * time.Hour
+	case KindBrand:
+		return 1 * time.Hour
 	default:
 		return 1 * time.Hour
 	}

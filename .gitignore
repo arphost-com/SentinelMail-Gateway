@@ -21,9 +21,9 @@ pnpm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 
-# Python workers
-workers/**/__pycache__/
-workers/**/*.pyc
+# Python
+**/__pycache__/
+**/*.pyc
 workers/**/.venv/
 workers/**/.pytest_cache/
 workers/**/.mypy_cache/

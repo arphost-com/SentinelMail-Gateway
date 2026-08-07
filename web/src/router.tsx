@@ -29,6 +29,7 @@ import { ConfigurationPage } from "./pages/ConfigurationPage";
 import { DomainVerificationPage } from "./pages/DomainVerificationPage";
 import { BillingEventsPage } from "./pages/BillingEventsPage";
 import { ClusterStatusPage } from "./pages/ClusterStatusPage";
+import { BrandIntelligencePage } from "./pages/BrandIntelligencePage";
 import { Card, CardBody, CardHeader, CardTitle } from "./components/ui/Card";
 
 function RequireAuth({ children }: { children: JSX.Element }) {
@@ -113,6 +114,7 @@ export function AppRouter() {
           <Route path="msp-settings" element={<RequireRole minRole="msp_admin"><MspSettingsPage /></RequireRole>} />
           <Route path="billing-events" element={<RequireRole minRole="super_admin"><BillingEventsPage /></RequireRole>} />
           <Route path="cluster-status" element={<RequireRole minRole="super_admin"><ClusterStatusPage /></RequireRole>} />
+          <Route path="brand-intelligence" element={<RequireRole minRole="msp_admin"><BrandIntelligencePage /></RequireRole>} />
           <Route path="system-settings" element={<RequireRole minRole="super_admin"><SystemSettingsPage /></RequireRole>} />
           <Route path="docs" element={<DocsPage />} />
         </Route>

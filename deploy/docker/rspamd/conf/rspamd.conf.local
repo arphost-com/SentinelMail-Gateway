@@ -3,8 +3,7 @@
 # (unlike local.d/, which only merges into sections matching the filename).
 # This is the right home for directives that don't live inside any block.
 
-# Load the SentinelMail post-scan ingest postfilter. Without this the
-# smg_ingest.lua snippet at /etc/rspamd/lua.local.d/ is inert and the
-# /api/v1/mail/events callback is never made (mail_logs stays empty,
-# UI dashboard shows zeros even though postfix is forwarding mail).
-lua = "/etc/rspamd/lua.local.d/smg_ingest.lua";
+# Rspamd 4 loads every top-level $LOCAL_CONFDIR/lua.local.d/*.lua file from
+# rules/rspamd.lua. Do not also set the top-level `lua` option here: loading
+# smg_ingest.lua twice registers duplicate coroutine symbols and can corrupt a
+# concurrent milter callback, causing Postfix to receive an application error.

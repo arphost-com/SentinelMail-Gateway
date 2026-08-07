@@ -5,6 +5,7 @@ import { api } from "../api/client";
 import { Card, CardBody, CardHeader, CardTitle } from "../components/ui/Card";
 import { ChartRow, CompositionDonut, HorizontalBars, StatTile } from "../components/ui/Charts";
 import { MailTypeTimeline, TimeTypeRow, TimelineBucketSelection } from "../components/ui/MailTypeTimeline";
+import { formatReportDay } from "../lib/date";
 
 interface DailyRow {
   day: string;
@@ -64,7 +65,7 @@ export function DashboardPage() {
         <StatCard label="Total processed" to={drilldownHref()} count={data?.total} isLoading={isLoading} hint="last 24h" />
         <StatCard label="Delivered" to={drilldownHref({ outcome: "delivered" })} count={outcomeCount(data, "delivered")} isLoading={isLoading} tone="success" total={data?.total} hint="share of processed" />
         <StatCard label="Held for review" to={drilldownHref({ outcome: "held_review" })} count={outcomeCount(data, "tagged") + outcomeCount(data, "quarantined")} isLoading={isLoading} tone="warning" total={data?.total} hint="tagged or quarantined" />
-        <StatCard label="Blocked, rejected, or failed" to={drilldownHref({ outcome: "blocked_rejected_failed" })} count={(data?.blocked_total ?? 0) + (data?.rejected ?? 0) + (data?.failed ?? 0)} isLoading={isLoading} tone="danger" total={data?.total} hint="blocked or errored" />
+        <StatCard label="Blocked, rejected, or failed" to={drilldownHref({ outcome: "blocked_rejected_failed" })} count={outcomeCount(data, "blocked") + outcomeCount(data, "rejected") + outcomeCount(data, "failed")} isLoading={isLoading} tone="danger" total={data?.total} hint="mutually exclusive outcomes" />
       </div>
 
       <div className="grid gap-4 grid-cols-1 md:grid-cols-3 mt-4">
@@ -81,7 +82,7 @@ export function DashboardPage() {
           <CardBody>
             <MailTypeTimeline
               rows={data?.mail_type_timeline ?? []}
-              empty="No mail type data for the last 24h."
+              empty={isLoading ? "Loading dashboard data…" : "No mail type data for the last 24h."}
               bucketFormat="hour"
               compact
               selectedBucket={selectedBucket?.key}
@@ -105,7 +106,7 @@ export function DashboardPage() {
             <CardTitle>Email types</CardTitle>
           </CardHeader>
           <CardBody>
-            <CompositionDonut rows={data?.email_types ?? []} empty="No email type data for the last 24h." label="Email type mix" centerLabel="messages" hrefForRow={(row) => drilldownHref({ email_type: row.key })} />
+            <CompositionDonut rows={data?.email_types ?? []} empty={isLoading ? "Loading dashboard data…" : "No email type data for the last 24h."} label="Email type mix" centerLabel="messages" hrefForRow={(row) => drilldownHref({ email_type: row.key })} />
           </CardBody>
         </Card>
         <Card>
@@ -113,7 +114,7 @@ export function DashboardPage() {
             <CardTitle>Threat mix</CardTitle>
           </CardHeader>
           <CardBody>
-            <CompositionDonut rows={data?.threat_categories ?? []} empty="No threat data for the last 24h." label="Threat category mix" centerLabel="signals" hrefForRow={(row) => drilldownHref({ threat_category: row.key })} />
+            <CompositionDonut rows={data?.threat_categories ?? []} empty={isLoading ? "Loading dashboard data…" : "No threat data for the last 24h."} label="Threat category mix" centerLabel="signals" hrefForRow={(row) => drilldownHref({ threat_category: row.key })} />
           </CardBody>
         </Card>
       </div>
@@ -124,7 +125,7 @@ export function DashboardPage() {
             <CardTitle>Score bands</CardTitle>
           </CardHeader>
           <CardBody>
-            <HorizontalBars rows={data?.score_bands ?? []} empty="No score band data for the last 24h." label="Score bands" hrefForRow={(row) => drilldownHref({ score_band: row.key })} />
+            <HorizontalBars rows={data?.score_bands ?? []} empty={isLoading ? "Loading dashboard data…" : "No score band data for the last 24h."} label="Score bands" hrefForRow={(row) => drilldownHref({ score_band: row.key })} />
           </CardBody>
         </Card>
         <Card>
@@ -133,8 +134,8 @@ export function DashboardPage() {
           </CardHeader>
           <CardBody>
             <HorizontalBars
-              rows={data?.daily_volume.map((r) => ({ key: new Date(r.day).toLocaleDateString(), count: r.count, hrefKey: r.day })) ?? []}
-              empty="No daily volume data for the last 24h."
+              rows={data?.daily_volume.map((r) => ({ key: formatReportDay(r.day), count: r.count, hrefKey: r.day })) ?? []}
+              empty={isLoading ? "Loading dashboard data…" : "No daily volume data for the last 24h."}
               label="Daily volume"
               maxRows={32}
               showShare={false}

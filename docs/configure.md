@@ -55,6 +55,22 @@ For SPF on outbound (when you eventually relay through the gateway), the recipie
 
 For DKIM signing on outbound, generate a keypair (Rspamd has `rspamadm dkim_keygen`) and publish the public key as a TXT record. (Rspamd milter does the signing; setup docs in MVP 3.)
 
+SentinelMail-generated abuse reports and notifications use the system-wide
+`mail.system_from_address`. In a hosted deployment, set this to an address in
+the provider's own authenticated domain, such as
+`abuse-reports@sentinelmail.provider.example`. Customer support addresses are
+used as reply/contact addresses and do not need to authorize the SentinelMail
+gateway in their SPF records. Self-hosters must ensure the automated sender
+domain authorizes the actual outbound relay with aligned SPF or DKIM.
+
+Do not publish a second SPF TXT record. If the sender domain already has SPF,
+merge any required `ip4:`, `a:`, or `include:` mechanism into that one record.
+
+`SMG_SYSTEM_FROM_ADDRESS` in `deploy/docker/.env` is the deployment-owned
+equivalent of the UI setting and takes precedence on API startup. ARPHost-hosted
+SentinelMail uses `abuse-reports@arphost.com`; customer domains do not need an
+SPF change for those reports.
+
 ---
 
 ## Ports — what binds where
@@ -133,6 +149,7 @@ Under `/system-settings` — applies to the whole gateway:
 | `ui.brand_name` | string | `SentinelMail Gateway` | UI header text |
 | `mail.hostname` | string | `mx.example.com` | Postfix `myhostname` (restart postfix to apply) |
 | `mail.mynetworks` | string | `127.0.0.0/8 10.0.0.0/8 172.16.0.0/12` | trusted relay sources |
+| `mail.system_from_address` | string | (empty) | authenticated From address for abuse reports and system email |
 | `mail.outbound_relay_host` | string | (empty) | smarthost if you can't deliver directly (ISP blocks port 25) |
 | `mail.outbound_relay_port` | int | 25 | smarthost port |
 | `message.retention_days` | int | 90 | days before inbox copies and quarantined messages are purged; maximum 365 |
@@ -150,7 +167,7 @@ Under `/org-settings` — applies to a single organization. Each key with the sa
 | Key | Type | What |
 | --- | --- | --- |
 | `brand.name` | string | per-org brand name for outbound mail |
-| `brand.support_email` | string | shown on quarantine release confirmations |
+| `brand.support_email` | string | tenant reply/contact address; not the authenticated automated sender |
 | `alerts.admin_email` | string | where this org gets notifications |
 | `message.retention_days` | int | override the system default for inbox and quarantine retention |
 | `digest.frequency` | enum | `off` \| `daily` \| `weekly` end-user digest |

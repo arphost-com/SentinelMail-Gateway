@@ -143,7 +143,7 @@ export function SenderListsPage() {
           <h1 className="text-2xl font-semibold">Allow/block lists</h1>
           <p className="text-sm text-subtle">{canManage ? "Manage trusted and blocked sender addresses and domains for protected mail domains." : "Review trusted and blocked senders visible to your account."}</p>
         </div>
-        {canManage && <Button onClick={() => setCreating(true)}>+ Add domain</Button>}
+        {canManage && <Button onClick={() => setCreating(true)}>+ Add allow/block rule</Button>}
       </div>
 
       <Card>
@@ -216,6 +216,11 @@ export function SenderListsPage() {
             </Button>
           ) : undefined}
       />
+      {entries.error && (
+        <div role="alert" className="rounded border border-danger bg-danger/10 px-3 py-2 text-sm">
+          Allow/block rules failed to load. Retry by refreshing this page.
+        </div>
+      )}
 
       {canManage && creating && (
         <SenderListModal

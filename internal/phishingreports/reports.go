@@ -86,13 +86,10 @@ type execer interface {
 
 func quarantineScannerHit(ctx context.Context, db execer, scanJobID uuid.UUID, verdict string) (*uuid.UUID, error) {
 	threatClass := "PHISHING"
-	reason := "scanner verified phishing"
+	reason := scannerDetectionReason(verdict)
 	switch verdict {
 	case "malware":
 		threatClass = "MALWARE"
-		reason = "scanner verified malware"
-	case "suspicious":
-		reason = "scanner detected suspicious phishing indicators"
 	}
 
 	var mailLogID uuid.UUID
@@ -100,7 +97,10 @@ func quarantineScannerHit(ctx context.Context, db execer, scanJobID uuid.UUID, v
 	var previousDisposition string
 	err := db.QueryRow(ctx, `
 		WITH target AS (
-			SELECT ml.id, ml.organization_id, ml.disposition::text AS previous_disposition
+			SELECT ml.id,
+			       ml.organization_id,
+			       ml.disposition::text AS previous_disposition,
+			       COALESCE(ml.reason, '') AS previous_reason
 			  FROM scan_jobs sj
 			  JOIN mail_logs ml ON ml.id = sj.mail_log_id
 			 WHERE sj.id = $1
@@ -111,7 +111,11 @@ func quarantineScannerHit(ctx context.Context, db execer, scanJobID uuid.UUID, v
 		                       WHEN target.previous_disposition = 'quarantined' THEN 'quarantined'::mail_disposition
 		                       ELSE 'tagged'::mail_disposition
 		                     END,
-		       reason = $2
+		       reason = CASE
+		                  WHEN btrim(target.previous_reason) = '' THEN $2
+		                  WHEN position(lower($2) in lower(target.previous_reason)) > 0 THEN target.previous_reason
+		                  ELSE target.previous_reason || '; ' || $2
+		                END
 		  FROM target
 		 WHERE ml.id = target.id
 		RETURNING ml.id, ml.organization_id, target.previous_disposition
@@ -163,6 +167,17 @@ func quarantineScannerHit(ctx context.Context, db execer, scanJobID uuid.UUID, v
 		return nil, err
 	}
 	return &mailLogID, nil
+}
+
+func scannerDetectionReason(verdict string) string {
+	switch verdict {
+	case "malware":
+		return "scanner verified malware"
+	case "suspicious":
+		return "scanner detected suspicious phishing indicators"
+	default:
+		return "scanner verified phishing"
+	}
 }
 
 func RecordFromMailbox(ctx context.Context, db *pgxpool.Pool, mailboxMessageID uuid.UUID, verdict string, reporterUserID uuid.UUID) error {

@@ -29,8 +29,8 @@ const SECTIONS: DocSection[] = [
         <p className="mt-2">
           The UI you are in covers everything you need to operate the gateway: configuration
           (Organizations, Domains, Gateways, Policies, Users), day-to-day mail handling
-          (Dashboard, Quarantine, Threats), and tenant settings (Settings → System, Threat feeds,
-          Account).
+          (Dashboard, Quarantine, Threats), and tenant settings (Configuration → System settings,
+          Organization settings, User settings).
         </p>
       </>
     ),
@@ -47,18 +47,24 @@ const SECTIONS: DocSection[] = [
             the rotation procedure in the repo README to reset it).
           </li>
           <li>
-            <strong>Enable two-factor.</strong> Settings → Account → "Enable two-factor". Scan the
+            <strong>Enable two-factor.</strong> Configuration → User settings → Account → "Enable two-factor". Scan the
             QR code with any TOTP app (1Password, Authy, Google Authenticator) and enter the
             6-digit code to confirm. Next sign-in will prompt for it after the password.
           </li>
           <li>
             <strong>Create an Organization.</strong> Organizations are tenants — your own company is
-            usually one; MSPs create one per customer. Sidebar → Organizations → "+ New".
+            usually one; MSPs create one per customer. Configuration → Organizations → "+ New".
           </li>
           <li>
-            <strong>Register your Domains.</strong> Sidebar → Domains → add the domains you accept
+            <strong>Register your Domains.</strong> Configuration → Domains → add the domains you accept
             mail for. The Rspamd integration uses these to recognise inbound vs outbound and to
             scope mail-log entries to the right organization.
+          </li>
+          <li>
+            <strong>Set the automated sender.</strong> Super admins set Configuration → System settings → Mail plane →
+            Automated sender address to an address in the operator&apos;s SPF/DKIM-authenticated
+            domain. Hosted customers do not add SentinelMail to their own SPF; their support
+            address is used only for replies and webform contact details.
           </li>
           <li>
             <strong>Point MX at us.</strong> Direct your DNS MX records at the gateway host
@@ -390,12 +396,12 @@ const SECTIONS: DocSection[] = [
           MFA uses standard time-based one-time passwords. Any authenticator app works — there's
           no SentinelMail-specific app.
         </p>
-        <p className="mt-2"><strong>Enrolling:</strong> Settings → Account → "Enable two-factor".
+        <p className="mt-2"><strong>Enrolling:</strong> Configuration → User settings → Account → "Enable two-factor".
           Scan the QR, enter the first 6-digit code to confirm.</p>
         <p className="mt-2"><strong>Logging in:</strong> after the password, the login screen
           asks for a code. The challenge expires in 5 minutes — if you let it sit, cancel and
           re-enter the password.</p>
-        <p className="mt-2"><strong>Disabling:</strong> Settings → Account → enter a current code
+        <p className="mt-2"><strong>Disabling:</strong> Configuration → User settings → Account → enter a current code
           → "Disable two-factor".</p>
         <p className="mt-2"><strong>Lost device:</strong> a super_admin can DELETE the user and
           recreate them, or run an admin password reset (revokes sessions and clears MFA when
@@ -567,7 +573,7 @@ GET    /scan-callback/{id}/payload`}
           <div>
             <dt className="font-semibold">Threat feed shows "error" status</dt>
             <dd className="text-sm">
-              See the <code>last_refresh_err</code> message on Settings → Threat feeds. Most often
+              See the <code>last_refresh_err</code> message on Configuration → System settings → Threat feeds. Most often
               a network blocker (Spamhaus DNS rate-limit, or no outbound HTTPS for URLhaus).
               Mail flow continues regardless — feeds never block delivery.
             </dd>

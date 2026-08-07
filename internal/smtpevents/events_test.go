@@ -31,3 +31,53 @@ func TestSMTPEventNoiseClauseUsesBlocklistedDeliveryNoiseOnly(t *testing.T) {
 		}
 	}
 }
+
+func TestNormalizeTerminalEventTypes(t *testing.T) {
+	tests := map[string]string{
+		"sent":       "delivered",
+		"delivered":  "delivered",
+		"discard":    "discarded",
+		"discarded":  "discarded",
+		"reject":     "reject",
+		"bounced":    "bounced",
+		"failed":     "failed",
+		"deferred":   "deferred",
+		"not-a-type": "",
+	}
+	for input, want := range tests {
+		if got := normalizeEventType(input); got != want {
+			t.Fatalf("normalizeEventType(%q) = %q, want %q", input, got, want)
+		}
+	}
+}
+
+func TestTerminalActionForEvent(t *testing.T) {
+	tests := map[string]string{
+		"delivered":  "delivered",
+		"discarded":  "discarded",
+		"reject":     "rejected",
+		"bounced":    "bounced",
+		"failed":     "failed",
+		"deferred":   "",
+		"tls_error":  "",
+		"disconnect": "",
+	}
+	for input, want := range tests {
+		if got := terminalActionForEvent(input); got != want {
+			t.Fatalf("terminalActionForEvent(%q) = %q, want %q", input, got, want)
+		}
+	}
+}
+
+func TestCorrelateTerminalOutcomeCastsOccurredAtAsTimestamp(t *testing.T) {
+	for _, want := range []string{
+		"$6::timestamptz - interval '24 hours'",
+		"$6::timestamptz + interval '5 minutes'",
+		"received_at - $6::timestamptz",
+		"terminal_at = $6::timestamptz",
+	} {
+		if !strings.Contains(correlateTerminalOutcomeSQL, want) {
+			t.Fatalf("correlateTerminalOutcomeSQL missing %q", want)
+		}
+	}
+}

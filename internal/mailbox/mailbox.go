@@ -56,6 +56,7 @@ type Message struct {
 	VerdictAt      *time.Time       `json:"verdict_at,omitempty"`
 	ExpiresAt      *time.Time       `json:"expires_at,omitempty"`
 	ReceivedAt     time.Time        `json:"received_at"`
+	HeldCopies     int              `json:"held_copies"`
 
 	mailLogReason       *string
 	mailLogSymbols      json.RawMessage
@@ -84,7 +85,11 @@ const cols = `id, organization_id, domain_id, mail_log_id, from_addr, to_addr,
               subject, body_text, verdict, verdict_by, verdict_at, expires_at, received_at,
               (SELECT reason FROM mail_logs ml WHERE ml.id = mailbox_messages.mail_log_id),
               COALESCE((SELECT symbols FROM mail_logs ml WHERE ml.id = mailbox_messages.mail_log_id), '{}'::jsonb),
-              list_unsubscribe, list_unsubscribe_post`
+              list_unsubscribe, list_unsubscribe_post,
+              (SELECT count(*) FROM quarantine_entries qe
+                WHERE qe.mail_log_id = mailbox_messages.mail_log_id
+                  AND qe.state = 'held'
+                  AND EXISTS (SELECT 1 FROM quarantine_blobs qb WHERE qb.quarantine_entry_id = qe.id))`
 
 type Handler struct{ DB *pgxpool.Pool }
 
@@ -166,6 +171,10 @@ func (h *Handler) unsubscribe(w http.ResponseWriter, r *http.Request) {
 	}
 	if !strings.EqualFold(strings.TrimSpace(msg.ToAddr), strings.TrimSpace(ident.Email)) {
 		httpx.WriteError(w, http.StatusNotFound, "not found")
+		return
+	}
+	if !unsubscribeAllowed(msg.Verdict) {
+		httpx.WriteError(w, http.StatusConflict, "unsubscribe is disabled for messages marked phishing or malware")
 		return
 	}
 	info := parseUnsubscribeInfo(stringValue(msg.listUnsubscribe), stringValue(msg.listUnsubscribePost))
@@ -597,6 +606,27 @@ func (h *Handler) setVerdict(ctx context.Context, r *http.Request, msg Message, 
 		verdict, ident.UserID, msg.ID), &msg); err != nil {
 		return Message{}, fmt.Errorf("update failed")
 	}
+	correlated := int64(0)
+	if verdict == "phishing" || verdict == "malware" {
+		tag, err := h.DB.Exec(ctx, `
+			UPDATE mailbox_messages duplicate
+			   SET verdict = $1, verdict_by = $2, verdict_at = now()
+			 WHERE duplicate.id <> $3
+			   AND duplicate.verdict = 'unreviewed'
+			   AND EXISTS (
+			     SELECT 1
+			       FROM mail_logs reported
+			       JOIN mail_logs related ON related.campaign_id = reported.campaign_id
+			      WHERE reported.id = $4
+			        AND reported.campaign_id IS NOT NULL
+			        AND related.id = duplicate.mail_log_id
+			   )
+		`, verdict, ident.UserID, msg.ID, msg.MailLogID)
+		if err != nil {
+			return Message{}, fmt.Errorf("correlate campaign copies: %w", err)
+		}
+		correlated = tag.RowsAffected()
+	}
 	if err := classifier.Learn(ctx, h.DB, classifier.Observation{
 		OrganizationID:   msg.OrganizationID,
 		DomainID:         msg.DomainID,
@@ -656,7 +686,7 @@ func (h *Handler) setVerdict(ctx context.Context, r *http.Request, msg Message, 
 		Action:         "mailbox.verdict",
 		TargetKind:     "mailbox_message",
 		TargetID:       msg.ID.String(),
-		Detail:         map[string]any{"verdict": verdict, "mail_log_id": msg.MailLogID.String(), "released": released, "denied": denied, "release_error": releaseErr},
+		Detail:         map[string]any{"verdict": verdict, "mail_log_id": msg.MailLogID.String(), "released": released, "denied": denied, "release_error": releaseErr, "correlated_copies": correlated},
 	})
 	return msg, nil
 }
@@ -766,7 +796,7 @@ func scan(row pgx.Row, msg *Message) error {
 	err := row.Scan(&msg.ID, &msg.OrganizationID, &msg.DomainID, &msg.MailLogID,
 		&msg.FromAddr, &msg.ToAddr, &msg.Subject, &msg.BodyText, &msg.Verdict,
 		&msg.VerdictBy, &msg.VerdictAt, &msg.ExpiresAt, &msg.ReceivedAt, &msg.mailLogReason,
-		&msg.mailLogSymbols, &msg.listUnsubscribe, &msg.listUnsubscribePost)
+		&msg.mailLogSymbols, &msg.listUnsubscribe, &msg.listUnsubscribePost, &msg.HeldCopies)
 	applyAnalysis(msg)
 	return err
 }
@@ -814,7 +844,20 @@ func applyAnalysis(msg *Message) {
 	msg.AuthStatus = spoof.Status
 	msg.SpoofWarning = spoof.Warning
 	msg.SpoofSignals = spoof.Signals
-	msg.Unsubscribe = parseUnsubscribeInfo(stringValue(msg.listUnsubscribe), stringValue(msg.listUnsubscribePost))
+	if unsubscribeAllowed(msg.Verdict) {
+		msg.Unsubscribe = parseUnsubscribeInfo(stringValue(msg.listUnsubscribe), stringValue(msg.listUnsubscribePost))
+	} else {
+		msg.Unsubscribe = nil
+	}
+}
+
+func unsubscribeAllowed(verdict string) bool {
+	switch strings.ToLower(strings.TrimSpace(verdict)) {
+	case "phishing", "malware":
+		return false
+	default:
+		return true
+	}
 }
 
 func mailboxEmailType(reason string) string {

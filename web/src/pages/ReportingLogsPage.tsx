@@ -24,7 +24,7 @@ export function ReportingLogsPage({ children }: ReportingLogsPageProps) {
     <div>
       <div className="mb-4 flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
         <div>
-          <h1 className="text-2xl font-semibold mb-1">Reporting and logs</h1>
+          <div className="text-lg font-semibold mb-1">Reporting and logs</div>
           <p className="text-sm text-subtle">Review message history, operator activity, SMTP events, and report summaries.</p>
         </div>
       </div>

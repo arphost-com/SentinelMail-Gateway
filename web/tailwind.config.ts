@@ -14,6 +14,7 @@ export default {
         accent:   "rgb(var(--accent) / <alpha-value>)",
         accentFg: "rgb(var(--accent-fg) / <alpha-value>)",
         danger:   "rgb(var(--danger) / <alpha-value>)",
+        dangerFg: "rgb(var(--danger-fg) / <alpha-value>)",
         warning:  "rgb(var(--warning) / <alpha-value>)",
         success:  "rgb(var(--success) / <alpha-value>)",
         focus:    "rgb(var(--focus) / <alpha-value>)",

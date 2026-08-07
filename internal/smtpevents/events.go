@@ -9,6 +9,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -108,8 +109,15 @@ func (h *Handler) ingest(w http.ResponseWriter, r *http.Request) {
 	}
 
 	orgID, domainID, _ := lookupOrgDomain(r.Context(), h.DB, req.ToAddr)
+	tx, err := h.DB.Begin(r.Context())
+	if err != nil {
+		httpx.WriteError(w, http.StatusInternalServerError, "begin transaction")
+		return
+	}
+	defer func() { _ = tx.Rollback(r.Context()) }()
+
 	var id uuid.UUID
-	err = h.DB.QueryRow(r.Context(), `
+	err = tx.QueryRow(r.Context(), `
 		INSERT INTO smtp_events
 		  (organization_id, domain_id, queue_id, event_type, phase, direction,
 		   from_addr, to_addr, client_ip, helo, relay, status_code, dsn, reason,
@@ -126,7 +134,20 @@ func (h *Handler) ingest(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteError(w, http.StatusInternalServerError, "insert: "+err.Error())
 		return
 	}
-	httpx.WriteJSON(w, http.StatusAccepted, map[string]any{"id": id})
+	mailLogID, mismatch, err := correlateTerminalOutcome(r.Context(), tx, req, occurredAt)
+	if err != nil {
+		httpx.WriteError(w, http.StatusInternalServerError, "correlate terminal outcome: "+err.Error())
+		return
+	}
+	if err := tx.Commit(r.Context()); err != nil {
+		httpx.WriteError(w, http.StatusInternalServerError, "commit terminal outcome")
+		return
+	}
+	httpx.WriteJSON(w, http.StatusAccepted, map[string]any{
+		"id":                id,
+		"mail_log_id":       mailLogID,
+		"delivery_mismatch": mismatch,
+	})
 }
 
 func (h *Handler) list(w http.ResponseWriter, r *http.Request) {
@@ -147,8 +168,9 @@ func (h *Handler) list(w http.ResponseWriter, r *http.Request) {
 		args = append(args, scope.VisibleOrgIDs)
 		clauses = append(clauses, fmt.Sprintf("organization_id = ANY($%d)", len(args)))
 	}
-	if eventType := strings.TrimSpace(q.Get("event_type")); eventType != "" {
-		args = append(args, normalizeEventType(eventType))
+	eventTypeFilter := normalizeEventType(q.Get("event_type"))
+	if eventTypeFilter != "" {
+		args = append(args, eventTypeFilter)
 		clauses = append(clauses, fmt.Sprintf("event_type = $%d", len(args)))
 	}
 	if to := strings.TrimSpace(q.Get("to")); to != "" {
@@ -161,6 +183,9 @@ func (h *Handler) list(w http.ResponseWriter, r *http.Request) {
 	}
 	if !parseQueryBool(q.Get("include_noise")) {
 		clauses = append(clauses, smtpEventNoiseClause())
+		if eventTypeFilter == "" {
+			clauses = append(clauses, "event_type <> 'delivered'")
+		}
 	}
 	where := ""
 	if len(clauses) > 0 {
@@ -250,6 +275,10 @@ func normalizeEventType(value string) string {
 	switch strings.ToLower(strings.TrimSpace(value)) {
 	case "reject", "rejected", "noqueue":
 		return "reject"
+	case "discard", "discarded":
+		return "discarded"
+	case "deliver", "delivered", "sent":
+		return "delivered"
 	case "defer", "deferred":
 		return "deferred"
 	case "bounce", "bounced":
@@ -265,6 +294,77 @@ func normalizeEventType(value string) string {
 	default:
 		return ""
 	}
+}
+
+func terminalActionForEvent(eventType string) string {
+	switch normalizeEventType(eventType) {
+	case "delivered":
+		return "delivered"
+	case "discarded":
+		return "discarded"
+	case "reject":
+		return "rejected"
+	case "bounced":
+		return "bounced"
+	case "failed":
+		return "failed"
+	default:
+		return ""
+	}
+}
+
+const correlateTerminalOutcomeSQL = `
+		WITH target AS (
+			SELECT id
+			  FROM mail_logs
+			 WHERE queue_id = $1
+			   AND received_at BETWEEN $6::timestamptz - interval '24 hours' AND $6::timestamptz + interval '5 minutes'
+			 ORDER BY abs(extract(epoch FROM (received_at - $6::timestamptz))) ASC
+			 LIMIT 1
+		)
+		UPDATE mail_logs ml
+		   SET terminal_action = $2,
+		       terminal_status_code = NULLIF($3, ''),
+		       terminal_reason = NULLIF($4, ''),
+		       terminal_relay = NULLIF($5, ''),
+		       terminal_at = $6::timestamptz,
+		       delivery_mismatch = ml.delivery_mismatch OR (
+		           $2 = 'delivered'
+		           AND ml.disposition IN ('quarantined'::mail_disposition, 'rejected'::mail_disposition)
+		       )
+		  FROM target
+		 WHERE ml.id = target.id
+		RETURNING ml.id, ml.delivery_mismatch
+	`
+
+func correlateTerminalOutcome(
+	ctx context.Context,
+	tx pgx.Tx,
+	req ingestReq,
+	occurredAt time.Time,
+) (*uuid.UUID, bool, error) {
+	action := terminalActionForEvent(req.EventType)
+	queueID := strings.TrimSpace(req.QueueID)
+	if action == "" || queueID == "" {
+		return nil, false, nil
+	}
+	statusCode := strings.TrimSpace(req.StatusCode)
+	if statusCode == "" {
+		statusCode = strings.TrimSpace(req.DSN)
+	}
+
+	var mailLogID uuid.UUID
+	var mismatch bool
+	err := tx.QueryRow(ctx, correlateTerminalOutcomeSQL,
+		queueID, action, statusCode, req.Reason, req.Relay, occurredAt,
+	).Scan(&mailLogID, &mismatch)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, err
+	}
+	return &mailLogID, mismatch, nil
 }
 
 func smtpEventNoiseClause() string {

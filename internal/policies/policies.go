@@ -4,6 +4,8 @@ package policies
 import (
 	"context"
 	"net/http"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -66,6 +68,42 @@ func (p *Policy) CommonScamDetectionEnabled() bool {
 
 func (p *Policy) CommonScamCategoryEnabled(slug string) bool {
 	return p.boolSetting("common_scam_"+slug+"_enabled", true)
+}
+
+func (p *Policy) CampaignThreshold() int {
+	if p == nil || p.Settings == nil {
+		return 25
+	}
+	raw, ok := p.Settings["campaign_threshold"]
+	if !ok {
+		return 25
+	}
+	value := 0
+	switch typed := raw.(type) {
+	case float64:
+		value = int(typed)
+	case int:
+		value = typed
+	case string:
+		value, _ = strconv.Atoi(strings.TrimSpace(typed))
+	}
+	if value < 2 || value > 10_000 {
+		return 25
+	}
+	return value
+}
+
+func (p *Policy) CampaignAction() string {
+	if p == nil || p.Settings == nil {
+		return "aggregate"
+	}
+	value, _ := p.Settings["campaign_action"].(string)
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "aggregate", "reject", "discard":
+		return strings.ToLower(strings.TrimSpace(value))
+	default:
+		return "aggregate"
+	}
 }
 
 func (p *Policy) boolSetting(key string, fallback bool) bool {

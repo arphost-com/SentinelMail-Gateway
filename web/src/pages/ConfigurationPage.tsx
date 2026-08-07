@@ -23,6 +23,7 @@ const TABS: ConfigurationTab[] = [
   { to: "/configuration/msp-settings", label: "MSP settings", minRole: "msp_admin" },
   { to: "/configuration/billing-events", label: "Billing hooks", minRole: "super_admin" },
   { to: "/configuration/cluster-status", label: "Cluster status", minRole: "super_admin" },
+  { to: "/configuration/brand-intelligence", label: "Brand intelligence", minRole: "msp_admin" },
   { to: "/configuration/system-settings", label: "System settings", minRole: "super_admin" },
   { to: "/configuration/docs", label: "Docs" },
 ];
@@ -35,7 +36,7 @@ export function ConfigurationPage() {
     <div>
       <div className="mb-4 flex flex-col gap-2 md:flex-row md:items-end md:justify-between">
         <div>
-          <h1 className="text-2xl font-semibold mb-1">Configuration</h1>
+          <div className="text-lg font-semibold mb-1">Configuration</div>
           <p className="text-sm text-subtle">Manage account preferences, organizations, mail domains, policies, users, and platform settings.</p>
         </div>
       </div>

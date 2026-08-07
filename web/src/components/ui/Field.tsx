@@ -1,4 +1,4 @@
-import { ReactNode } from "react";
+import { cloneElement, Fragment, isValidElement, ReactNode, useId } from "react";
 import { HelpTooltip } from "./HelpTooltip";
 
 /**
@@ -21,18 +21,40 @@ export function Field({
   required?: boolean;
   children: ReactNode;
 }) {
+  const generatedId = useId();
+  const labelId = `${generatedId}-label`;
+  const descriptionId = hint || error ? `${generatedId}-description` : undefined;
+  const child = isValidElement<Record<string, unknown>>(children) && children.type !== Fragment
+    ? cloneElement(children, {
+        "aria-labelledby": children.props["aria-label"] || children.props["aria-labelledby"]
+          ? children.props["aria-labelledby"]
+          : labelId,
+        "aria-describedby": children.props["aria-describedby"] ?? descriptionId,
+        "aria-required": children.props["aria-required"] ?? (required || undefined),
+      })
+    : (
+      <div
+        role="group"
+        aria-labelledby={labelId}
+        aria-describedby={descriptionId}
+        aria-required={required || undefined}
+      >
+        {children}
+      </div>
+    );
+
   return (
-    <label className="block text-sm">
+    <div className="block text-sm">
       <span className="mb-1 inline-flex items-center gap-2 font-medium">
-        <span>
+        <span id={labelId}>
           {label}
           {required && <span aria-hidden="true" className="text-danger"> *</span>}
         </span>
         {help && <HelpTooltip text={help} />}
       </span>
-      {children}
-      {hint && !error && <span className="block mt-1 text-xs text-subtle">{hint}</span>}
-      {error && <span role="alert" className="block mt-1 text-xs text-danger">{error}</span>}
-    </label>
+      {child}
+      {hint && !error && <span id={descriptionId} className="block mt-1 text-xs text-subtle">{hint}</span>}
+      {error && <span id={descriptionId} role="alert" className="block mt-1 text-xs text-danger">{error}</span>}
+    </div>
   );
 }

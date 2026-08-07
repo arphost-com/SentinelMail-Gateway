@@ -1,0 +1,145 @@
+# slug|name|aliases (semicolon separated)|official domains (semicolon separated)|cue group|priority
+microsoft|Microsoft|microsoft;office 365;microsoft 365;onedrive;sharepoint;outlook|microsoft.com;microsoftonline.com;microsoftsupport.com;office.com;office365.com;office365support.com;outlook.com;live.com|identity|1000
+google|Google|google;gmail;google workspace;google drive|google.com;accounts.google.com;mail.google.com;googlemail.com;youtube.com|identity|990
+apple|Apple|apple;apple id;apple account;icloud;itunes;app store|apple.com;email.apple.com;icloud.com;itunes.com|identity|980
+amazon|Amazon|amazon;amazon prime|amazon.com;amazonbusiness.com|commerce|970
+linkedin|LinkedIn|linkedin;linked in|linkedin.com|social|960
+meta|Meta|meta platforms;meta account|meta.com|social|950
+facebook|Facebook|facebook;facebook business;facebook marketplace|facebook.com;fb.com|social|945
+instagram|Instagram|instagram;instagram account|instagram.com|social|940
+whatsapp|WhatsApp|whatsapp;whatsapp web|whatsapp.com|social|935
+dropbox|Dropbox|dropbox;dropbox paper;docsend|dropbox.com;dropboxmail.com;docsend.com|business|930
+netflix|Netflix|netflix;netflix account|netflix.com|streaming|925
+spotify|Spotify|spotify;spotify premium|spotify.com;email.spotify.com;newsroom.spotify.com;scdn.co|streaming|920
+openai|OpenAI|openai;chatgpt;chatgpt plus|openai.com;chatgpt.com|identity|915
+paypal|PayPal|paypal;pay pal|paypal.com;mail.paypal.com|finance|910
+adobe|Adobe|adobe;acrobat;adobe sign;creative cloud|adobe.com;email.adobe.com;mail.adobe.com|business|905
+docusign|DocuSign|docusign;docu sign|docusign.net;docusign.com|business|900
+dhl|DHL|dhl;dhl express|dhl.com|delivery|895
+fedex|FedEx|fedex;fedex express|fedex.com|delivery|890
+ups|UPS|ups delivery;ups package;ups my choice|ups.com|delivery|885
+usps|USPS|usps;united states postal service;informed delivery|usps.com|delivery|880
+mastercard|Mastercard|mastercard;master card|mastercard.com|finance|875
+visa|Visa|visa card;verified by visa|visa.com|finance|870
+wells-fargo|Wells Fargo|wells fargo;wellsfargo|wellsfargo.com|finance|865
+bank-of-america|Bank of America|bank of america;bofa|bankofamerica.com|finance|860
+chase|Chase|chase bank;jpmorgan chase|chase.com;jpmorgan.com|finance|855
+citibank|Citibank|citibank;citi bank;citi card|citi.com;citibank.com|finance|850
+american-express|American Express|american express;amex|americanexpress.com;amex.com|finance|845
+capital-one|Capital One|capital one;capitalone|capitalone.com|finance|840
+intuit|Intuit|intuit;quickbooks;quick books;turbotax;turbo tax|intuit.com;quickbooks.intuit.com;notification.intuit.com;turbotax.intuit.com|finance|835
+coinbase|Coinbase|coinbase;coinbase wallet|coinbase.com|crypto|830
+binance|Binance|binance;binance pay|binance.com|crypto|825
+roblox|Roblox|roblox;robux|roblox.com|gaming|820
+steam|Steam|steam;steam community;steam wallet|steampowered.com;steamcommunity.com|gaming|815
+playstation|PlayStation|playstation;play station;psn|playstation.com;sony.com|gaming|810
+xbox|Xbox|xbox;xbox live;game pass|xbox.com;microsoft.com|gaming|805
+yahoo|Yahoo|yahoo;yahoo mail|yahoo.com|identity|800
+office365|Office 365|office365;office 365 login|office.com;office365.com;microsoft.com;microsoftonline.com|identity|795
+youtube|YouTube|youtube;youtube studio|youtube.com;google.com|social|790
+booking-com|Booking.com|booking.com;booking account|booking.com|travel|785
+airbnb|Airbnb|airbnb;airbnb account|airbnb.com|travel|780
+uber|Uber|uber;uber account;uber eats|uber.com;ubereats.com|travel|775
+costco|Costco|costco;costco membership|costco.com|commerce|770
+walmart|Walmart|walmart;walmart account|walmart.com|commerce|765
+ebay|eBay|ebay;ebay account|ebay.com|commerce|760
+target-retail|Target|target order;target circle;target account|target.com|commerce|755
+tesla|Tesla|tesla;tesla account|tesla.com|commerce|750
+atlassian|Atlassian|atlassian;jira;confluence|atlassian.com;jira.com|business|745
+github|GitHub|github;github account|github.com|business|740
+gitlab|GitLab|gitlab;gitlab account|gitlab.com|business|735
+salesforce|Salesforce|salesforce;sales cloud|salesforce.com;force.com|business|730
+okta|Okta|okta;okta verify|okta.com|identity|725
+zoom|Zoom|zoom;zoom meeting|zoom.us;zoom.com|business|720
+slack|Slack|slack;slack workspace|slack.com|business|715
+proton|Proton|proton mail;protonmail;proton account|proton.me;protonmail.com|identity|710
+aol|AOL|aol;aol mail|aol.com|identity|705
+icloud|iCloud|icloud;icloud mail;icloud storage|icloud.com;apple.com|identity|700
+onedrive|OneDrive|onedrive;one drive|onedrive.com;microsoft.com;live.com|identity|695
+sharepoint|SharePoint|sharepoint;share point|sharepoint.com;microsoft.com|business|690
+box|Box|box cloud;box account;box shared file|box.com|business|685
+notion|Notion|notion;notion workspace|notion.so;notion.com|business|680
+canva|Canva|canva;canva account|canva.com|business|675
+mailchimp|Mailchimp|mailchimp;mail chimp|mailchimp.com|business|670
+hubspot|HubSpot|hubspot;hub spot|hubspot.com|business|665
+stripe|Stripe|stripe;stripe account|stripe.com|finance|660
+square|Square|square payments;square account|squareup.com;square.com|finance|655
+cash-app|Cash App|cash app;cashapp|cash.app;squareup.com|finance|650
+venmo|Venmo|venmo;venmo account|venmo.com|finance|645
+zelle|Zelle|zelle;zelle pay|zellepay.com|finance|640
+discover|Discover|discover card;discover bank|discover.com|finance|635
+us-bank|U.S. Bank|u.s. bank;us bank;usbank|usbank.com|finance|630
+pnc|PNC|pnc bank;pnc account|pnc.com|finance|625
+truist|Truist|truist;truist bank|truist.com|finance|620
+td-bank|TD Bank|td bank;td account|td.com;tdbank.com|finance|615
+hsbc|HSBC|hsbc;hsbc bank|hsbc.com|finance|610
+barclays|Barclays|barclays;barclaycard|barclays.com;barclaycard.com|finance|605
+santander|Santander|santander;santander bank|santander.com|finance|600
+natwest|NatWest|natwest;nat west|natwest.com|finance|595
+lloyds|Lloyds Bank|lloyds bank;lloyds|lloydsbank.com|finance|590
+rbc|Royal Bank of Canada|royal bank of canada;rbc bank;rbc online banking|rbc.com;royalbank.com|finance|585
+scotiabank|Scotiabank|scotiabank;bank of nova scotia|scotiabank.com|finance|580
+bmo|BMO|bmo bank;bmo online banking|bmo.com|finance|575
+cibc|CIBC|cibc bank;cibc online banking|cibc.com|finance|570
+commonwealth-bank|Commonwealth Bank|commonwealth bank;commbank|commbank.com.au|finance|565
+westpac|Westpac|westpac;westpac bank|westpac.com.au|finance|560
+anz|ANZ|anz bank;anz online banking|anz.com.au;anz.com|finance|555
+nab|National Australia Bank|national australia bank;nab internet banking|nab.com.au|finance|550
+icici|ICICI Bank|icici bank;icici internet banking|icicibank.com|finance|545
+hdfc|HDFC Bank|hdfc bank;hdfc netbanking|hdfcbank.com|finance|540
+sbi|State Bank of India|state bank of india;sbi online banking|sbi.co.in;onlinesbi.sbi|finance|535
+revolut|Revolut|revolut;revolut account|revolut.com|finance|530
+wise-payments|Wise|wise payments;wise account;transferwise|wise.com;transferwise.com|finance|525
+kraken|Kraken|kraken crypto;kraken account|kraken.com|crypto|520
+metamask|MetaMask|metamask;meta mask wallet|metamask.io|crypto|515
+ledger|Ledger|ledger wallet;ledger live|ledger.com|crypto|510
+trust-wallet|Trust Wallet|trust wallet;trustwallet|trustwallet.com|crypto|505
+blockchain-com|Blockchain.com|blockchain.com;blockchain wallet|blockchain.com|crypto|500
+orange|Orange|orange telecom;orange mobile;orange account|orange.com|telecom|495
+vodafone|Vodafone|vodafone;vodafone account|vodafone.com|telecom|490
+att|AT&T|at&t;att wireless;myatt|att.com|telecom|485
+verizon|Verizon|verizon;verizon wireless|verizon.com|telecom|480
+t-mobile|T-Mobile|t-mobile;t mobile|t-mobile.com|telecom|475
+xfinity|Xfinity|xfinity;comcast xfinity|xfinity.com;comcast.com|telecom|470
+bt|BT|bt broadband;bt mail;british telecom|bt.com|telecom|465
+telstra|Telstra|telstra;telstra account|telstra.com.au|telecom|460
+canada-post|Canada Post|canada post;canadapost|canadapost-postescanada.ca;canadapost.ca|delivery|455
+royal-mail|Royal Mail|royal mail;royalmail|royalmail.com|delivery|450
+australia-post|Australia Post|australia post;auspost|auspost.com.au|delivery|445
+gls|GLS|gls parcel;gls delivery|gls-group.com|delivery|440
+dpd|DPD|dpd parcel;dpd delivery|dpd.com|delivery|435
+expedia|Expedia|expedia;expedia booking|expedia.com|travel|430
+hotels-com|Hotels.com|hotels.com;hotels booking|hotels.com|travel|425
+marriott|Marriott|marriott;marriott bonvoy|marriott.com|travel|420
+hilton|Hilton|hilton;hilton honors|hilton.com|travel|415
+delta|Delta Air Lines|delta air lines;delta skymiles|delta.com|travel|410
+american-airlines|American Airlines|american airlines;aadvantage|aa.com|travel|405
+united-airlines|United Airlines|united airlines;mileageplus|united.com|travel|400
+southwest|Southwest Airlines|southwest airlines;southwest rapid rewards|southwest.com|travel|395
+lyft|Lyft|lyft;lyft account|lyft.com|travel|390
+doordash|DoorDash|doordash;door dash|doordash.com|commerce|385
+instacart|Instacart|instacart;instacart account|instacart.com|commerce|380
+alibaba|Alibaba|alibaba;alibaba.com|alibaba.com|commerce|375
+aliexpress|AliExpress|aliexpress;ali express|aliexpress.com|commerce|370
+shopify|Shopify|shopify;shopify account|shopify.com|commerce|365
+best-buy|Best Buy|best buy;bestbuy account|bestbuy.com|commerce|360
+home-depot|The Home Depot|home depot;the home depot|homedepot.com|commerce|355
+lowes|Lowe's|lowe's;lowes account|lowes.com|commerce|350
+ikea|IKEA|ikea;ikea family|ikea.com|commerce|345
+nike|Nike|nike;nike membership|nike.com|commerce|340
+adidas|Adidas|adidas;adidas account|adidas.com|commerce|335
+mcdonalds|McDonald's|mcdonald's;mcdonalds rewards|mcdonalds.com|commerce|330
+starbucks|Starbucks|starbucks;starbucks rewards|starbucks.com|commerce|325
+nintendo|Nintendo|nintendo;nintendo account|nintendo.com|gaming|320
+epic-games|Epic Games|epic games;fortnite account|epicgames.com|gaming|315
+ea|Electronic Arts|electronic arts;ea account;ea sports|ea.com|gaming|310
+battle-net|Battle.net|battle.net;battlenet;blizzard account|battle.net;blizzard.com|gaming|305
+discord|Discord|discord;discord account|discord.com;discordapp.com|social|300
+telegram|Telegram|telegram;telegram account|telegram.org|social|295
+tiktok|TikTok|tiktok;tik tok|tiktok.com|social|290
+snapchat|Snapchat|snapchat;snap account|snapchat.com;snap.com|social|285
+pinterest|Pinterest|pinterest;pinterest account|pinterest.com|social|280
+reddit|Reddit|reddit;reddit account|reddit.com|social|275
+irs|Internal Revenue Service|internal revenue service;irs tax refund;irs notice|irs.gov|government|270
+hmrc|HM Revenue & Customs|hm revenue and customs;hmrc tax refund;hmrc notice|gov.uk|government|265
+social-security|Social Security Administration|social security administration;social security account;my social security|ssa.gov|government|260

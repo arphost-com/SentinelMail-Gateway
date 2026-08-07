@@ -10,7 +10,7 @@ import { ColumnDef, DataTable } from "../components/ui/DataTable";
 import { Input } from "../components/ui/Input";
 import { Modal } from "../components/ui/Modal";
 import { ScamGuidance } from "../components/ui/ScamGuidance";
-import { SpoofWarning } from "../components/ui/SpoofWarning";
+import { senderAuthLabel, SpoofWarning } from "../components/ui/SpoofWarning";
 import { confirmDanger } from "../components/ui/confirm";
 
 interface QuarantineEntry {
@@ -33,12 +33,19 @@ interface QuarantineEntry {
   auth_status?: string;
   spoof_warning?: string;
   spoof_signals?: string[];
+  symbols?: Record<string, { group?: string; score?: number; options?: string[] }>;
   headers?: Array<{ name: string; value: string }>;
   content_text?: string;
   raw_excerpt?: string;
   expires_at?: string;
   received_at: string;
   released_at?: string;
+  campaign_id?: string;
+  campaign_copies: number;
+  suppressed_copies: number;
+  unique_source_ips: number;
+  campaign_first_seen?: string;
+  campaign_last_seen?: string;
 }
 
 interface SourceIPReport {
@@ -54,6 +61,10 @@ interface SourceIPReport {
   outbound_server?: string;
   submission_mode?: "email" | "webform";
   webform?: SourceIPWebform;
+  campaign_copies?: number;
+  unique_source_ips?: number;
+  campaign_source_ips?: string[];
+  campaign_sources_truncated?: boolean;
 }
 
 interface SourceIPWebform {
@@ -356,7 +367,16 @@ export function QuarantinePage() {
       width: 39,
       className: "max-w-[28rem] whitespace-nowrap",
       sortValue: (entry) => entry.subject ?? "",
-      render: (entry) => <span className="block truncate" title={entry.subject}>{entry.subject ?? "—"}</span>,
+      render: (entry) => (
+        <span className="block truncate" title={entry.subject}>
+          {entry.subject ?? "—"}
+          {entry.campaign_copies > 1 && (
+            <span className="ml-2 rounded border border-warning/50 bg-warning/10 px-1.5 py-0.5 text-xs text-warning">
+              {entry.campaign_copies.toLocaleString()} copies
+            </span>
+          )}
+        </span>
+      ),
     },
     {
       key: "score",
@@ -590,7 +610,7 @@ export function QuarantinePage() {
         )}
       />
 
-      {detailItem && (
+      {detailItem && !sourceIPReportEntry && (
         <Modal open onClose={closeDetail} title={detailItem.subject || "(no subject)"} xl>
           <div className="grid gap-4">
             {detail.error && (
@@ -630,8 +650,23 @@ export function QuarantinePage() {
                       <dd className="min-w-0 break-words">{detailItem.subject ?? "—"}</dd>
                       <dt className="text-subtle">Source IP</dt>
                       <dd className="min-w-0 break-all">{detailItem.client_ip ?? "—"}</dd>
+                      {detailItem.campaign_copies > 1 && (
+                        <>
+                          <dt className="text-subtle">Campaign</dt>
+                          <dd>
+                            {detailItem.campaign_copies.toLocaleString()} copies from {detailItem.unique_source_ips.toLocaleString()} source IPs;
+                            {" "}{detailItem.suppressed_copies.toLocaleString()} duplicate copies aggregated
+                          </dd>
+                          <dt className="text-subtle">Campaign window</dt>
+                          <dd>
+                            {detailItem.campaign_first_seen ? new Date(detailItem.campaign_first_seen).toLocaleString() : "—"}
+                            {" – "}
+                            {detailItem.campaign_last_seen ? new Date(detailItem.campaign_last_seen).toLocaleString() : "—"}
+                          </dd>
+                        </>
+                      )}
                       <dt className="text-subtle">Sender auth</dt>
-                      <dd className="min-w-0">{detailItem.spoof_warning ? "Possible spoof" : "No spoof signal detected"}</dd>
+                      <dd className="min-w-0">{senderAuthLabel(detailItem)}</dd>
                       <dt className="text-subtle">Size</dt>
                       <dd>{formatBytes(detailItem.size_bytes)}</dd>
                       <dt className="text-subtle">Storage</dt>
@@ -639,11 +674,15 @@ export function QuarantinePage() {
                       <dt className="text-subtle">Classification</dt>
                       <dd>{displayQuarantineVerdict(detailItem)}</dd>
                       <dt className="text-subtle">Release status</dt>
-                      <dd>{detailItem.can_release ? "Ready to release." : detailItem.has_blob ? "Message is not currently held." : "Original message was not stored."}</dd>
+                      <dd>{detailItem.can_release ? "Held in quarantine — release available." : detailItem.has_blob ? "Message is not currently held." : "Original message was not stored."}</dd>
                       <dt className="text-subtle">Expires</dt>
                       <dd>{detailItem.expires_at ? new Date(detailItem.expires_at).toLocaleString() : "—"}</dd>
-                      <dt className="text-subtle">Released</dt>
-                      <dd>{detailItem.released_at ? new Date(detailItem.released_at).toLocaleString() : "—"}</dd>
+                      {detailItem.released_at && (
+                        <>
+                          <dt className="text-subtle">Released</dt>
+                          <dd>{new Date(detailItem.released_at).toLocaleString()}</dd>
+                        </>
+                      )}
                     </dl>
                   </CardBody>
                 </Card>
@@ -680,6 +719,7 @@ export function QuarantinePage() {
                         ) : "—"}
                       </dd>
                     </dl>
+                    <RspamdSignals symbols={detailItem.symbols} />
                   </CardBody>
                 </Card>
                 <SpoofWarning item={detailItem} />
@@ -884,6 +924,24 @@ export function QuarantinePage() {
                       <dd>{sourceIPReport.network_name || "—"}</dd>
                       <dt className="text-subtle">Abuse contact</dt>
                       <dd className="break-all">{sourceIPReport.abuse_contacts.length ? sourceIPReport.abuse_contacts.join(", ") : "—"}</dd>
+                      <dt className="text-subtle">Subject</dt>
+                      <dd className="break-words">{sourceIPReport.report_subject}</dd>
+                      <dt className="text-subtle">Original message</dt>
+                      <dd>{sourceIPReportEntry.has_blob ? "Attached with full headers" : "Not available"}</dd>
+                      {(sourceIPReport.campaign_copies ?? 0) > 1 && (
+                        <>
+                          <dt className="text-subtle">Related campaign</dt>
+                          <dd>
+                            {sourceIPReport.campaign_copies?.toLocaleString()} copies from{" "}
+                            {sourceIPReport.unique_source_ips?.toLocaleString()} source IPs
+                          </dd>
+                          <dt className="text-subtle">Observed source IPs</dt>
+                          <dd className="max-h-32 overflow-auto break-all font-mono text-xs">
+                            {(sourceIPReport.campaign_source_ips ?? []).join(", ")}
+                            {sourceIPReport.campaign_sources_truncated ? " …" : ""}
+                          </dd>
+                        </>
+                      )}
                       <dt className="text-subtle">Outbound relay</dt>
                       <dd>{sourceIPReport.outbound_server || "—"}</dd>
                       <dt className="text-subtle">Status</dt>
@@ -965,6 +1023,18 @@ export function QuarantinePage() {
                   >
                     Copy report
                   </Button>
+                  <Button
+                    size="sm"
+                    variant="secondary"
+                    onClick={() => {
+                      prepareSourceIPReport.reset();
+                      sendSourceIPReport.reset();
+                      setSourceIPReportEntry(null);
+                      setSourceIPReport(null);
+                    }}
+                  >
+                    {sourceIPReport.sent ? "Close" : "Cancel"}
+                  </Button>
                 </div>
               </>
             )}
@@ -984,12 +1054,40 @@ function loadingEntry(id: string): QuarantineEntry {
     has_blob: false,
     can_release: false,
     email_type: "Loading",
+    campaign_copies: 1,
+    suppressed_copies: 0,
+    unique_source_ips: 0,
     received_at: new Date().toISOString(),
   };
 }
 
 function isAbuseReportable(entry: QuarantineEntry): boolean {
   return ["SPAM", "PHISHING", "MALWARE", "VIRUS", "OTHER"].includes((entry.threat_class ?? "").trim().toUpperCase());
+}
+
+function RspamdSignals({ symbols }: { symbols?: QuarantineEntry["symbols"] }) {
+  const rows = Object.entries(symbols ?? {})
+    .map(([name, detail]) => ({ name, score: Number(detail?.score ?? 0), options: detail?.options ?? [] }))
+    .filter((row) => row.score !== 0)
+    .sort((left, right) => Math.abs(right.score) - Math.abs(left.score))
+    .slice(0, 16);
+  if (rows.length === 0) return null;
+  return (
+    <section className="mt-4" aria-labelledby="rspamd-signals-title">
+      <h3 id="rspamd-signals-title" className="mb-2 text-sm font-semibold">Rspamd score contributions</h3>
+      <ul className="grid gap-2 text-sm">
+        {rows.map((row) => (
+          <li key={row.name} className="grid gap-1 rounded border border-border bg-muted/30 px-3 py-2 md:grid-cols-[minmax(0,1fr)_5rem]">
+            <span className="min-w-0">
+              <span className="block break-all font-mono">{row.name}</span>
+              {row.options.length > 0 && <span className="block break-all text-xs text-subtle">{row.options.join(", ")}</span>}
+            </span>
+            <span className="tabular-nums md:text-right">{row.score > 0 ? "+" : ""}{row.score.toFixed(1)}</span>
+          </li>
+        ))}
+      </ul>
+    </section>
+  );
 }
 
 function CopyField({ label, value }: { label: string; value: string }) {

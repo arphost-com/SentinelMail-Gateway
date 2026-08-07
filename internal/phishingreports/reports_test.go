@@ -40,3 +40,16 @@ func TestSuspiciousScanVerdictRequiresPhishingEvidence(t *testing.T) {
 		t.Fatal("plain login page was reportable, want ignored")
 	}
 }
+
+func TestScannerDetectionReason(t *testing.T) {
+	tests := map[string]string{
+		"malware":    "scanner verified malware",
+		"suspicious": "scanner detected suspicious phishing indicators",
+		"phishing":   "scanner verified phishing",
+	}
+	for verdict, want := range tests {
+		if got := scannerDetectionReason(verdict); got != want {
+			t.Fatalf("scannerDetectionReason(%q) = %q, want %q", verdict, got, want)
+		}
+	}
+}

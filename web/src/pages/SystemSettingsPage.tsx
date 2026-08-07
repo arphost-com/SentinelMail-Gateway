@@ -1,3 +1,5 @@
+import { useQuery } from "@tanstack/react-query";
+import { api } from "../api/client";
 import { SchemaSettingsForm } from "../components/SchemaSettingsForm";
 import { ThreatFeedsTab } from "./settings/ThreatFeedsTab";
 import { Card, CardBody, CardHeader, CardTitle } from "../components/ui/Card";
@@ -22,6 +24,11 @@ const GROUP_LABELS = {
  * Per-org overrides live on /org-settings.
  */
 export function SystemSettingsPage() {
+  const health = useQuery({
+    queryKey: ["system-health"],
+    queryFn: () => api.get<{ status: string; checks: Record<string, string> }>("/healthz"),
+    refetchInterval: 30_000,
+  });
   return (
     <div>
       <div className="mb-5">
@@ -30,6 +37,26 @@ export function SystemSettingsPage() {
           Global defaults for every organization. Organization-specific overrides belong in Org settings.
         </p>
       </div>
+
+      <Card className="mb-4">
+        <CardHeader>
+          <CardTitle>System health</CardTitle>
+        </CardHeader>
+        <CardBody>
+          {health.error && <div role="alert" className="text-sm text-danger">{health.error.message}</div>}
+          <dl className="grid gap-2 text-sm md:grid-cols-[10rem_1fr]">
+            {Object.entries(health.data?.checks ?? {}).map(([name, status]) => (
+              <div key={name} className="contents">
+                <dt className="font-medium uppercase">{name}</dt>
+                <dd className={status === "ok" ? "text-success" : status.startsWith("error") ? "text-danger" : "text-warning"}>
+                  {status}
+                </dd>
+              </div>
+            ))}
+          </dl>
+          {!health.data && !health.error && <div className="text-sm text-subtle">Checking system health…</div>}
+        </CardBody>
+      </Card>
 
       <Card className="mb-4">
         <CardHeader className="flex flex-col gap-1 md:flex-row md:items-center md:justify-between">

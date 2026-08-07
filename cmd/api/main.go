@@ -17,6 +17,7 @@ import (
 	"github.com/redis/go-redis/v9"
 
 	"github.com/arphost/sentinelmail-gateway/internal/bootstrap"
+	"github.com/arphost/sentinelmail-gateway/internal/brandintel"
 	"github.com/arphost/sentinelmail-gateway/internal/config"
 	"github.com/arphost/sentinelmail-gateway/internal/db"
 	"github.com/arphost/sentinelmail-gateway/internal/httpapi"
@@ -76,6 +77,9 @@ func serve() error {
 		return err
 	}
 	defer pool.Close()
+	if err := brandintel.EnsureDefaults(ctx, pool); err != nil {
+		return fmt.Errorf("seed phishing-brand intelligence: %w", err)
+	}
 
 	redisOpts, err := redis.ParseURL(cfg.RedisURL)
 	if err != nil {
@@ -92,6 +96,7 @@ func serve() error {
 	feedRegistry.Add(threatfeed.NewDNSBL("spamhaus_dbl", "dbl.spamhaus.org"))
 	feedRegistry.Add(threatfeed.NewDNSBL("spamcop", "bl.spamcop.net"))
 	feedRegistry.Add(threatfeed.NewURLhaus(nil))
+	feedRegistry.Add(brandintel.NewPhishTankFeed(pool, nil))
 	feedRegistry.Start(ctx)
 	defer feedRegistry.Stop()
 

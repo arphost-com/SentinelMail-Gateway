@@ -69,6 +69,11 @@ func TestRetentionSchemaUsesCombinedMessageKey(t *testing.T) {
 	assertMissingSetting(t, DefaultOrgKeys, "quarantine.retention_days")
 }
 
+func TestSystemSchemaIncludesAuthenticatedAutomatedSender(t *testing.T) {
+	assertHasSetting(t, DefaultKeys, "mail.system_from_address")
+	assertMissingSetting(t, DefaultOrgKeys, "mail.system_from_address")
+}
+
 func assertHasSetting(t *testing.T, metas []SettingMeta, key string) {
 	t.Helper()
 	for _, meta := range metas {

@@ -97,7 +97,7 @@ The script refuses to overwrite an existing env file. Now edit `.env`:
 nano deploy/docker/.env
 ```
 
-You **must** set these eight fields. Leave the others at their defaults for now (you can tighten them in [configure.md](configure.md) later).
+You **must** set these nine fields. Leave the others at their defaults for now (you can tighten them in [configure.md](configure.md) later).
 
 | Field | What to put | How to generate |
 | ----- | ----------- | --------------- |
@@ -108,6 +108,7 @@ You **must** set these eight fields. Leave the others at their defaults for now 
 | `RSPAMD_PASSWORD` | a long random string | `openssl rand -hex 16` |
 | `RSPAMD_CONTROLLER_PASSWORD` | a long random string | `openssl rand -hex 16` |
 | `POSTFIX_MYHOSTNAME` | `<YOUR-HOSTNAME>` from Step 1 | (paste the hostname) |
+| `SMG_SYSTEM_FROM_ADDRESS` | an automated sender in a domain authenticated by this relay, e.g. `abuse-reports@example.com` | (create or select the mailbox/alias first) |
 | `SMG_ENV` | `prod` | (literal value) |
 
 For TLS, set these three:
@@ -198,6 +199,13 @@ In DNS for that domain, point the MX record at this gateway:
 ```
 example.com.    MX   10   <YOUR-HOSTNAME>.
 ```
+
+Configure **System Settings → Automated sender address** before sending abuse
+reports or system notifications. Hosted providers should use an address in
+their own authenticated domain; customer domains then require no SentinelMail
+SPF change. For a self-hosted sender domain, authorize the actual outbound
+gateway/relay with aligned SPF or DKIM. Add the authorization to the domain's
+existing SPF record—never create a second `v=spf1` TXT record.
 
 ### Step 11 — point the gateway at your downstream mail server
 

@@ -26,7 +26,7 @@ interface SmtpEvent {
   occurred_at: string;
 }
 
-const EVENT_TYPES = ["reject", "deferred", "bounced", "failed", "tls_error", "disconnect", "info"];
+const EVENT_TYPES = ["reject", "discarded", "delivered", "deferred", "bounced", "failed", "tls_error", "disconnect", "info"];
 
 export function SmtpEventsPage() {
   const [eventType, setEventType] = useState("");
@@ -65,7 +65,7 @@ export function SmtpEventsPage() {
     <div>
       <h1 className="text-2xl font-semibold mb-4">SMTP events</h1>
       <p className="mb-4 text-sm text-subtle">
-        Postfix-only SMTP attempts, rejects, TLS failures, and delivery deferrals that may happen before accepted mail reaches the normal mail log.
+        Postfix terminal outcomes and SMTP-only events, including downstream delivery, milter discard/reject, deferrals, bounces, and TLS failures.
       </p>
 
       <Card className="mb-4">
@@ -119,8 +119,8 @@ export function SmtpEventsPage() {
                   setIncludeNoise(event.target.checked);
                 }}
               />
-              <span>Show suppressed queue noise</span>
-              <HelpTooltip text="When off, deferred, bounced, and failed events tied to system, organization, or domain blocklisted senders are hidden from the default view." />
+              <span>Show routine delivery/noise</span>
+              <HelpTooltip text="When off, routine successful deliveries and deferred, bounced, or failed events tied to blocklisted senders are hidden. Select the delivered type to inspect successful terminal outcomes directly." />
             </label>
           </div>
         </CardBody>

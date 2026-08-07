@@ -6,6 +6,7 @@ import { Card, CardBody, CardHeader, CardTitle } from "../components/ui/Card";
 import { ChartRow, CompositionDonut, HorizontalBars, StatTile } from "../components/ui/Charts";
 import { ColumnDef, DataTable } from "../components/ui/DataTable";
 import { MailTypeTimeline, TimeTypeRow, TimelineBucketSelection } from "../components/ui/MailTypeTimeline";
+import { formatReportDay } from "../lib/date";
 
 interface DailyRow {
   day: string;
@@ -125,7 +126,7 @@ export function ReportsPage() {
         <Metric label="Processed" to={drilldownHref()} value={data?.total} loading={report.isLoading} hint={windowLabel(windowValue)} />
         <Metric label="Delivered" to={drilldownHref({ outcome: "delivered" })} value={outcomeCount(data, "delivered")} loading={report.isLoading} tone="success" total={data?.total} hint="share of processed" />
         <Metric label="Held for review" to={drilldownHref({ outcome: "held_review" })} value={outcomeCount(data, "tagged") + outcomeCount(data, "quarantined")} loading={report.isLoading} tone="warning" total={data?.total} hint="tagged or quarantined" />
-        <Metric label="Blocked, rejected, or failed" to={drilldownHref({ outcome: "blocked_rejected_failed" })} value={(data?.blocked_total ?? 0) + (data?.rejected ?? 0) + (data?.failed ?? 0)} loading={report.isLoading} tone="danger" total={data?.total} hint="blocked or errored" />
+        <Metric label="Blocked, rejected, or failed" to={drilldownHref({ outcome: "blocked_rejected_failed" })} value={outcomeCount(data, "blocked") + outcomeCount(data, "rejected") + outcomeCount(data, "failed")} loading={report.isLoading} tone="danger" total={data?.total} hint="mutually exclusive outcomes" />
       </div>
 
       <div className="grid gap-4 grid-cols-1 md:grid-cols-4 mb-4">
@@ -165,7 +166,7 @@ export function ReportsPage() {
             <CardTitle>Threat mix</CardTitle>
           </CardHeader>
           <CardBody>
-            <CompositionDonut rows={data?.threat_categories ?? []} empty="No threat data for this window." label="Threat category mix" centerLabel="signals" hrefForRow={(row) => drilldownHref({ threat_category: row.key })} />
+            <CompositionDonut rows={data?.threat_categories ?? []} empty={chartEmpty(report.isLoading, "No threat data for this window.")} label="Threat category mix" centerLabel="signals" hrefForRow={(row) => drilldownHref({ threat_category: row.key })} />
           </CardBody>
         </Card>
         <Card>
@@ -173,7 +174,7 @@ export function ReportsPage() {
             <CardTitle>Email types</CardTitle>
           </CardHeader>
           <CardBody>
-            <CompositionDonut rows={data?.email_types ?? []} empty="No email type data for this window." label="Email type mix" centerLabel="messages" hrefForRow={(row) => drilldownHref({ email_type: row.key })} />
+            <CompositionDonut rows={data?.email_types ?? []} empty={chartEmpty(report.isLoading, "No email type data for this window.")} label="Email type mix" centerLabel="messages" hrefForRow={(row) => drilldownHref({ email_type: row.key })} />
           </CardBody>
         </Card>
       </div>
@@ -212,7 +213,7 @@ export function ReportsPage() {
             <CardTitle>Score bands</CardTitle>
           </CardHeader>
           <CardBody>
-            <HorizontalBars rows={data?.score_bands ?? []} empty="No score band data for this window." label="Score bands" hrefForRow={(row) => drilldownHref({ score_band: row.key })} />
+            <HorizontalBars rows={data?.score_bands ?? []} empty={chartEmpty(report.isLoading, "No score band data for this window.")} label="Score bands" hrefForRow={(row) => drilldownHref({ score_band: row.key })} />
           </CardBody>
         </Card>
         <Card>
@@ -220,7 +221,7 @@ export function ReportsPage() {
             <CardTitle>Phishing confirmations</CardTitle>
           </CardHeader>
           <CardBody>
-            <HorizontalBars rows={data?.phishing_reports ?? []} empty="No phishing confirmation data for this window." label="Phishing confirmations" capitalize hrefForRow={() => "#phishing-reports"} />
+            <HorizontalBars rows={data?.phishing_reports ?? []} empty={chartEmpty(report.isLoading, "No phishing confirmation data for this window.")} label="Phishing confirmations" capitalize hrefForRow={() => "#phishing-reports"} />
           </CardBody>
         </Card>
       </div>
@@ -232,8 +233,8 @@ export function ReportsPage() {
           </CardHeader>
           <CardBody>
             <HorizontalBars
-              rows={data?.daily_volume.map((r) => ({ key: new Date(r.day).toLocaleDateString(), count: r.count, hrefKey: r.day })) ?? []}
-              empty="No daily volume data for this window."
+              rows={data?.daily_volume.map((r) => ({ key: formatReportDay(r.day), count: r.count, hrefKey: r.day })) ?? []}
+              empty={chartEmpty(report.isLoading, "No daily volume data for this window.")}
               label="Daily volume"
               maxRows={32}
               showShare={false}
@@ -247,7 +248,7 @@ export function ReportsPage() {
             <CardTitle>Delivery outcome</CardTitle>
           </CardHeader>
           <CardBody>
-            <HorizontalBars rows={data?.delivery_outcomes ?? []} empty="No delivery outcome data for this window." label="Delivery outcome" capitalize hrefForRow={(row) => drilldownHref({ outcome: row.key })} />
+            <HorizontalBars rows={data?.delivery_outcomes ?? []} empty={chartEmpty(report.isLoading, "No delivery outcome data for this window.")} label="Delivery outcome" capitalize hrefForRow={(row) => drilldownHref({ outcome: row.key })} />
           </CardBody>
         </Card>
       </div>
@@ -258,7 +259,7 @@ export function ReportsPage() {
             <CardTitle>Top domains</CardTitle>
           </CardHeader>
           <CardBody>
-            <HorizontalBars rows={data?.top_domains ?? []} empty="No domain data for this window." label="Top domains" monospace hrefForRow={(row) => drilldownHref({ domain: row.key })} />
+            <HorizontalBars rows={data?.top_domains ?? []} empty={chartEmpty(report.isLoading, "No domain data for this window.")} label="Top domains" monospace hrefForRow={(row) => drilldownHref({ domain: row.key })} />
           </CardBody>
         </Card>
         <Card>
@@ -266,7 +267,7 @@ export function ReportsPage() {
             <CardTitle>Top Rspamd symbols</CardTitle>
           </CardHeader>
           <CardBody>
-            <HorizontalBars rows={data?.top_symbols ?? []} empty="No Rspamd symbol data for this window." label="Top Rspamd symbols" monospace hrefForRow={(row) => drilldownHref({ symbol: row.key })} />
+            <HorizontalBars rows={data?.top_symbols ?? []} empty={chartEmpty(report.isLoading, "No Rspamd symbol data for this window.")} label="Top Rspamd symbols" monospace hrefForRow={(row) => drilldownHref({ symbol: row.key })} />
           </CardBody>
         </Card>
       </div>
@@ -277,7 +278,7 @@ export function ReportsPage() {
             <CardTitle>Top senders</CardTitle>
           </CardHeader>
           <CardBody>
-            <HorizontalBars rows={data?.top_senders ?? []} empty="No sender data for this window." label="Top senders" monospace hrefForRow={(row) => drilldownHref({ from: row.key })} />
+            <HorizontalBars rows={data?.top_senders ?? []} empty={chartEmpty(report.isLoading, "No sender data for this window.")} label="Top senders" monospace hrefForRow={(row) => drilldownHref({ from: row.key })} />
           </CardBody>
         </Card>
         <Card>
@@ -285,7 +286,7 @@ export function ReportsPage() {
             <CardTitle>Blocked sender domains</CardTitle>
           </CardHeader>
           <CardBody>
-            <HorizontalBars rows={data?.blocked_senders ?? []} empty="No sender blocklist hits for this window." label="Blocked sender domains" monospace hrefForRow={(row) => drilldownHref({ sender_domain: row.key, reason: "sender matched blacklist" })} />
+            <HorizontalBars rows={data?.blocked_senders ?? []} empty={chartEmpty(report.isLoading, "No sender blocklist hits for this window.")} label="Blocked sender domains" monospace hrefForRow={(row) => drilldownHref({ sender_domain: row.key, reason: "sender matched blacklist" })} />
           </CardBody>
         </Card>
       </div>
@@ -355,4 +356,8 @@ function dayHref(row: ChartRow & { hrefKey?: string }, minSince?: string, maxUnt
 
 function outcomeCount(data: ReportsSummary | undefined, key: string) {
   return data?.delivery_outcomes.find((row) => row.key === key)?.count ?? 0;
+}
+
+function chartEmpty(loading: boolean, empty: string) {
+  return loading ? "Loading report data…" : empty;
 }

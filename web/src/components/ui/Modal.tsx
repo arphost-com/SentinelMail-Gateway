@@ -1,4 +1,4 @@
-import { ReactNode, useEffect, useRef } from "react";
+import { ReactNode, useEffect, useId, useRef } from "react";
 import clsx from "clsx";
 
 interface ModalProps {
@@ -19,6 +19,7 @@ interface ModalProps {
  */
 export function Modal({ open, onClose, title, children, footer, wide, xl }: ModalProps) {
   const ref = useRef<HTMLDialogElement>(null);
+  const titleId = useId();
 
   useEffect(() => {
     const dlg = ref.current;
@@ -44,7 +45,8 @@ export function Modal({ open, onClose, title, children, footer, wide, xl }: Moda
   return (
     <dialog
       ref={ref}
-      aria-labelledby="modal-title"
+      aria-labelledby={titleId}
+      aria-modal="true"
       onClick={(e) => {
         // Click on the backdrop (the dialog element itself) closes;
         // clicks inside the inner card don't bubble out.
@@ -56,7 +58,7 @@ export function Modal({ open, onClose, title, children, footer, wide, xl }: Moda
       )}
     >
       <div className="px-4 py-3 border-b border-border flex items-center justify-between">
-        <h2 id="modal-title" className="text-lg font-semibold">{title}</h2>
+        <h2 id={titleId} className="text-lg font-semibold">{title}</h2>
         <button
           type="button"
           aria-label="Close"

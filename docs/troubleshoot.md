@@ -188,6 +188,25 @@ Mail flow continues regardless — feed errors never block delivery.
 
 ## CI / deploy
 
+### Quarantine says held, but the user reports receiving the original message
+
+Open **Reports → Mail logs**, find the message by sender, recipient, subject, or
+queue ID, and inspect **Terminal SMTP action** in Details.
+
+- `discarded` confirms Postfix accepted the SMTP transaction without relaying
+  the held message.
+- `rejected` confirms the SMTP sender received a permanent rejection.
+- `delivered` on a `quarantined` or `rejected` mail log is marked as a critical
+  **delivery mismatch** and requires immediate mail-plane investigation.
+- `pending or unavailable` means the terminal Postfix log was not observed,
+  commonly because the record predates terminal-outcome tracking or the
+  Postfix container was recreated before its logs were collected.
+
+Use the original message's complete `Received` headers to find its SentinelMail
+queue ID. Messages with the same sender and subject may be separate campaign
+copies from different source IPs and must not be assumed to be the same queue
+transaction.
+
 ### Pipeline failed but I can't see why
 
 The runner uploads the full trace to GitLab; check it under **CI/CD → Jobs → click the failed job**. Local-only diagnostic:

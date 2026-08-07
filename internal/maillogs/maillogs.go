@@ -26,38 +26,48 @@ import (
 )
 
 type Entry struct {
-	ID             uuid.UUID         `json:"id"`
-	OrganizationID uuid.UUID         `json:"organization_id"`
-	DomainID       *uuid.UUID        `json:"domain_id,omitempty"`
-	QueueID        *string           `json:"queue_id,omitempty"`
-	MessageID      *string           `json:"message_id,omitempty"`
-	Direction      string            `json:"direction"`
-	FromAddr       *string           `json:"from_addr,omitempty"`
-	ToAddrs        []string          `json:"to_addrs"`
-	ClientIP       *netip.Addr       `json:"client_ip,omitempty"`
-	Helo           *string           `json:"helo,omitempty"`
-	Subject        *string           `json:"subject,omitempty"`
-	SizeBytes      *int              `json:"size_bytes,omitempty"`
-	RspamdScore    *float64          `json:"rspamd_score,omitempty"`
-	RspamdAction   *string           `json:"rspamd_action,omitempty"`
-	Symbols        json.RawMessage   `json:"symbols,omitempty"`
-	Disposition    string            `json:"disposition"`
-	Reason         *string           `json:"reason,omitempty"`
-	EmailType      string            `json:"email_type"`
-	ScamWarning    string            `json:"scam_warning,omitempty"`
-	ScamSignals    []string          `json:"scam_signals,omitempty"`
-	ScamLinks      []classifier.Link `json:"scam_links,omitempty"`
-	ReceivedAt     time.Time         `json:"received_at"`
+	ID               uuid.UUID         `json:"id"`
+	OrganizationID   uuid.UUID         `json:"organization_id"`
+	DomainID         *uuid.UUID        `json:"domain_id,omitempty"`
+	QueueID          *string           `json:"queue_id,omitempty"`
+	MessageID        *string           `json:"message_id,omitempty"`
+	Direction        string            `json:"direction"`
+	FromAddr         *string           `json:"from_addr,omitempty"`
+	ToAddrs          []string          `json:"to_addrs"`
+	ClientIP         *netip.Addr       `json:"client_ip,omitempty"`
+	Helo             *string           `json:"helo,omitempty"`
+	Subject          *string           `json:"subject,omitempty"`
+	SizeBytes        *int              `json:"size_bytes,omitempty"`
+	RspamdScore      *float64          `json:"rspamd_score,omitempty"`
+	RspamdAction     *string           `json:"rspamd_action,omitempty"`
+	Symbols          json.RawMessage   `json:"symbols,omitempty"`
+	Disposition      string            `json:"disposition"`
+	Reason           *string           `json:"reason,omitempty"`
+	TerminalAction   *string           `json:"terminal_action,omitempty"`
+	TerminalStatus   *string           `json:"terminal_status_code,omitempty"`
+	TerminalReason   *string           `json:"terminal_reason,omitempty"`
+	TerminalRelay    *string           `json:"terminal_relay,omitempty"`
+	TerminalAt       *time.Time        `json:"terminal_at,omitempty"`
+	DeliveryMismatch bool              `json:"delivery_mismatch"`
+	EmailType        string            `json:"email_type"`
+	ScamWarning      string            `json:"scam_warning,omitempty"`
+	ScamSignals      []string          `json:"scam_signals,omitempty"`
+	ScamLinks        []classifier.Link `json:"scam_links,omitempty"`
+	ReceivedAt       time.Time         `json:"received_at"`
 }
 
 const cols = `id, organization_id, domain_id, queue_id, message_id, direction,
               from_addr, to_addrs, client_ip, helo, subject, size_bytes,
-              rspamd_score, rspamd_action, symbols, disposition::text, reason, received_at`
+              rspamd_score, rspamd_action, symbols, disposition::text, reason,
+              terminal_action, terminal_status_code, terminal_reason, terminal_relay,
+              terminal_at, delivery_mismatch, received_at`
 
 func scan(row pgx.Row, e *Entry) error {
 	err := row.Scan(&e.ID, &e.OrganizationID, &e.DomainID, &e.QueueID, &e.MessageID, &e.Direction,
 		&e.FromAddr, &e.ToAddrs, &e.ClientIP, &e.Helo, &e.Subject, &e.SizeBytes,
-		&e.RspamdScore, &e.RspamdAction, &e.Symbols, &e.Disposition, &e.Reason, &e.ReceivedAt)
+		&e.RspamdScore, &e.RspamdAction, &e.Symbols, &e.Disposition, &e.Reason,
+		&e.TerminalAction, &e.TerminalStatus, &e.TerminalReason, &e.TerminalRelay,
+		&e.TerminalAt, &e.DeliveryMismatch, &e.ReceivedAt)
 	applyAnalysis(e)
 	return err
 }
@@ -156,6 +166,9 @@ func (h *Handler) list(w http.ResponseWriter, r *http.Request) {
 		args = append(args, dir)
 		clauses = append(clauses, fmt.Sprintf("direction = $%d", len(args)))
 	}
+	if parseQueryBool(q.Get("delivery_mismatch")) {
+		clauses = append(clauses, "delivery_mismatch = true")
+	}
 	if since, ok := parseFilterTime(q.Get("since")); ok {
 		args = append(args, since)
 		clauses = append(clauses, fmt.Sprintf("received_at >= $%d", len(args)))
@@ -190,7 +203,11 @@ func (h *Handler) list(w http.ResponseWriter, r *http.Request) {
 			OR lower(COALESCE(message_id, '')) LIKE $%d
 			OR lower(COALESCE(reason, '')) LIKE $%d
 			OR lower(COALESCE(symbols::text, '')) LIKE $%d
-		)`, len(args), len(args), len(args), len(args), len(args), len(args), len(args)))
+			OR lower(COALESCE(terminal_action, '')) LIKE $%d
+			OR lower(COALESCE(terminal_reason, '')) LIKE $%d
+			OR lower(COALESCE(terminal_relay, '')) LIKE $%d
+		)`, len(args), len(args), len(args), len(args), len(args), len(args), len(args),
+			len(args), len(args), len(args)))
 	}
 	if domain := strings.TrimSpace(q.Get("domain")); domain != "" {
 		args = append(args, strings.ToLower(domain))
@@ -654,16 +671,33 @@ func mailLogThreatCategoryCase(alias string) string {
 	  WHEN lower(COALESCE(` + alias + `.reason, '')) = 'sender matched blacklist' THEN 'Sender blocklist'
 	  WHEN lower(COALESCE(` + alias + `.reason, '')) = 'reputation blocklist hit' THEN 'Reputation blocklist'
 	  WHEN EXISTS (
-		SELECT 1 FROM jsonb_object_keys(COALESCE(` + alias + `.symbols, '{}'::jsonb)) s(key)
-		WHERE upper(s.key) LIKE '%PHISH%' OR upper(s.key) LIKE '%DMARC%'
+		SELECT 1 FROM jsonb_each(COALESCE(` + alias + `.symbols, '{}'::jsonb)) s(key, value)
+		WHERE upper(s.key) IN ('DMARC_POLICY_REJECT', 'DMARC_POLICY_QUARANTINE')
+		   OR (
+			upper(s.key) LIKE '%PHISH%'
+			AND COALESCE((s.value->>'score')::numeric, 0) > 0
+		   )
 	  ) THEN 'Phishing / impersonation'
 	  WHEN EXISTS (
-		SELECT 1 FROM jsonb_object_keys(COALESCE(` + alias + `.symbols, '{}'::jsonb)) s(key)
-		WHERE upper(s.key) LIKE '%VIRUS%' OR upper(s.key) LIKE '%CLAM%' OR upper(s.key) LIKE '%MALWARE%'
+		SELECT 1 FROM jsonb_each(COALESCE(` + alias + `.symbols, '{}'::jsonb)) s(key, value)
+		WHERE (
+			upper(s.key) IN ('VIRUS', 'VIRUS_FOUND', 'MALWARE', 'MALWARE_FOUND')
+			OR upper(s.key) LIKE 'CLAM_%'
+		)
+		  AND COALESCE((s.value->>'score')::numeric, 0) > 0
 	  ) THEN 'Malware'
 	  WHEN EXISTS (
-		SELECT 1 FROM jsonb_object_keys(COALESCE(` + alias + `.symbols, '{}'::jsonb)) s(key)
-		WHERE upper(s.key) LIKE '%RBL%' OR upper(s.key) LIKE '%ZEN%' OR upper(s.key) LIKE '%SPAMHAUS%' OR upper(s.key) LIKE '%SURBL%' OR upper(s.key) LIKE '%URIBL%'
+		SELECT 1 FROM jsonb_each(COALESCE(` + alias + `.symbols, '{}'::jsonb)) s(key, value)
+		WHERE (
+			upper(s.key) LIKE '%RBL%'
+			OR upper(s.key) LIKE '%ZEN%'
+			OR upper(s.key) LIKE '%SPAMHAUS%'
+			OR upper(s.key) LIKE '%SURBL%'
+			OR upper(s.key) LIKE '%URIBL%'
+		)
+		  AND upper(s.key) NOT LIKE '%_BLOCKED'
+		  AND upper(s.key) NOT LIKE '%DNSFAIL%'
+		  AND COALESCE((s.value->>'score')::numeric, 0) > 0
 	  ) THEN 'Reputation blocklist'
 	  WHEN ` + alias + `.disposition IN ('quarantined', 'tagged') THEN 'Spam content'
 	  WHEN ` + alias + `.disposition IN ('rejected', 'failed') THEN 'Rejected / failed'
@@ -874,4 +908,13 @@ func queryAll(ctx context.Context, db *pgxpool.Pool, sql string, args ...any) ([
 		out = append(out, e)
 	}
 	return out, rows.Err()
+}
+
+func parseQueryBool(value string) bool {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
+	}
 }

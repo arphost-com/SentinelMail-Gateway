@@ -2,7 +2,8 @@
 
 Each handler is a callable (payload: dict, http: httpx.Client) -> dict where
 the returned dict shape is {"verdict": str, "result": dict, "error"?: str}.
-Verdict labels: "clean" | "suspicious" | "malicious" | "failed".
+Verdict labels: "clean" | "suspicious" | "malicious" | "unavailable" |
+"inconclusive" | "failed".
 """
 
 from typing import Any, Callable

@@ -148,6 +148,31 @@ func TestCommonScamSettings(t *testing.T) {
 	}
 }
 
+func TestCampaignSettings(t *testing.T) {
+	tests := []struct {
+		name      string
+		settings  map[string]any
+		threshold int
+		action    string
+	}{
+		{name: "defaults", settings: nil, threshold: 25, action: "aggregate"},
+		{name: "numeric", settings: map[string]any{"campaign_threshold": float64(100), "campaign_action": "reject"}, threshold: 100, action: "reject"},
+		{name: "string threshold", settings: map[string]any{"campaign_threshold": "50", "campaign_action": "discard"}, threshold: 50, action: "discard"},
+		{name: "invalid", settings: map[string]any{"campaign_threshold": 1, "campaign_action": "delete"}, threshold: 25, action: "aggregate"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			p := &Policy{Settings: tt.settings}
+			if got := p.CampaignThreshold(); got != tt.threshold {
+				t.Fatalf("CampaignThreshold = %d, want %d", got, tt.threshold)
+			}
+			if got := p.CampaignAction(); got != tt.action {
+				t.Fatalf("CampaignAction = %q, want %q", got, tt.action)
+			}
+		})
+	}
+}
+
 // TestResolverCTEHasNoAmbiguousColumns guards against a regression of the
 // "column reference 'id' is ambiguous" Postgres error we hit when the
 // recursive CTE used a column literally named `id`, which collided with

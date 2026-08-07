@@ -1,3 +1,4 @@
+import { useEffect, useState } from "react";
 import { NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
 import clsx from "clsx";
 import { useAuth } from "../auth/AuthProvider";
@@ -30,6 +31,11 @@ export function AppLayout() {
   const { me, logout } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
+  const [mobileNavOpen, setMobileNavOpen] = useState(false);
+
+  useEffect(() => {
+    setMobileNavOpen(false);
+  }, [location.pathname]);
 
   const visibleSections = NAV_SECTIONS.map((section) => ({
     ...section,
@@ -67,14 +73,32 @@ export function AppLayout() {
           aria-label="Primary"
           className="flex flex-col border-b border-border bg-surface p-3 lg:sticky lg:top-0 lg:h-screen lg:overflow-y-auto lg:border-b-0 lg:border-r lg:p-4"
         >
-          <div className="mb-3 flex items-center gap-2 border-b border-border px-2 pb-3">
-            <img src="/favicon.svg" alt="" width={28} height={28} className="shrink-0" />
-            <div>
-              <div className="text-sm font-semibold tracking-wide leading-tight">SentinelMail</div>
-              <div className="text-[10px] text-subtle tracking-widest uppercase">Gateway</div>
+          <div className="flex items-center justify-between gap-3 border-b border-border px-2 pb-3 lg:mb-3">
+            <div className="flex items-center gap-2">
+              <img src="/favicon.svg" alt="" width={28} height={28} className="shrink-0" />
+              <div>
+                <div className="text-sm font-semibold tracking-wide leading-tight">SentinelMail</div>
+                <div className="text-[10px] text-subtle tracking-widest uppercase">Gateway</div>
+              </div>
             </div>
+            <button
+              type="button"
+              className="rounded border border-border bg-muted px-3 py-2 text-sm font-medium text-fg lg:hidden"
+              aria-expanded={mobileNavOpen}
+              aria-controls="primary-navigation"
+              onClick={() => setMobileNavOpen((current) => !current)}
+            >
+              {mobileNavOpen ? "Close menu" : "Menu"}
+            </button>
           </div>
-          <nav aria-label="Sections" className="flex gap-4 overflow-x-auto pb-1 text-sm lg:flex-col lg:gap-4 lg:overflow-visible lg:pb-0">
+          <nav
+            id="primary-navigation"
+            aria-label="Sections"
+            className={clsx(
+              "mt-3 gap-4 overflow-x-auto pb-1 text-sm lg:mt-0 lg:flex lg:flex-col lg:gap-4 lg:overflow-visible lg:pb-0",
+              mobileNavOpen ? "flex" : "hidden",
+            )}
+          >
             {visibleSections.map((section) => (
               <div key={section.label} className="min-w-[11rem] lg:min-w-0">
                 <div className="mb-1 px-3 text-[10px] font-semibold uppercase tracking-widest text-subtle">

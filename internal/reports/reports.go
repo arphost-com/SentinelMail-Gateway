@@ -581,16 +581,33 @@ func (h *Handler) summary(w http.ResponseWriter, r *http.Request) {
 			  WHEN lower(COALESCE(ml.reason, '')) = 'sender matched blacklist' THEN 'Sender blocklist'
 			  WHEN lower(COALESCE(ml.reason, '')) = 'reputation blocklist hit' THEN 'Reputation blocklist'
 			  WHEN EXISTS (
-				SELECT 1 FROM jsonb_object_keys(COALESCE(ml.symbols, '{}'::jsonb)) s(key)
-				WHERE upper(s.key) LIKE '%PHISH%' OR upper(s.key) LIKE '%DMARC%'
+				SELECT 1 FROM jsonb_each(COALESCE(ml.symbols, '{}'::jsonb)) s(key, value)
+				WHERE upper(s.key) IN ('DMARC_POLICY_REJECT', 'DMARC_POLICY_QUARANTINE')
+				   OR (
+					upper(s.key) LIKE '%PHISH%'
+					AND COALESCE((s.value->>'score')::numeric, 0) > 0
+				   )
 			  ) THEN 'Phishing / impersonation'
 			  WHEN EXISTS (
-				SELECT 1 FROM jsonb_object_keys(COALESCE(ml.symbols, '{}'::jsonb)) s(key)
-				WHERE upper(s.key) LIKE '%VIRUS%' OR upper(s.key) LIKE '%CLAM%' OR upper(s.key) LIKE '%MALWARE%'
+				SELECT 1 FROM jsonb_each(COALESCE(ml.symbols, '{}'::jsonb)) s(key, value)
+				WHERE (
+					upper(s.key) IN ('VIRUS', 'VIRUS_FOUND', 'MALWARE', 'MALWARE_FOUND')
+					OR upper(s.key) LIKE 'CLAM_%'
+				)
+				  AND COALESCE((s.value->>'score')::numeric, 0) > 0
 			  ) THEN 'Malware'
 			  WHEN EXISTS (
-				SELECT 1 FROM jsonb_object_keys(COALESCE(ml.symbols, '{}'::jsonb)) s(key)
-				WHERE upper(s.key) LIKE '%RBL%' OR upper(s.key) LIKE '%ZEN%' OR upper(s.key) LIKE '%SPAMHAUS%' OR upper(s.key) LIKE '%SURBL%' OR upper(s.key) LIKE '%URIBL%'
+				SELECT 1 FROM jsonb_each(COALESCE(ml.symbols, '{}'::jsonb)) s(key, value)
+				WHERE (
+					upper(s.key) LIKE '%RBL%'
+					OR upper(s.key) LIKE '%ZEN%'
+					OR upper(s.key) LIKE '%SPAMHAUS%'
+					OR upper(s.key) LIKE '%SURBL%'
+					OR upper(s.key) LIKE '%URIBL%'
+				)
+				  AND upper(s.key) NOT LIKE '%_BLOCKED'
+				  AND upper(s.key) NOT LIKE '%DNSFAIL%'
+				  AND COALESCE((s.value->>'score')::numeric, 0) > 0
 			  ) THEN 'Reputation blocklist'
 			  WHEN ml.disposition IN ('quarantined', 'tagged') THEN 'Spam content'
 			  WHEN ml.disposition IN ('rejected', 'failed') THEN 'Rejected / failed'
@@ -642,6 +659,20 @@ func (h *Handler) summary(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteError(w, http.StatusInternalServerError, "phishing report summary failed")
 		return
 	}
+	phishingTotal, err := h.count(r, `
+		SELECT count(DISTINCT COALESCE(
+			'mail:' || pr.mail_log_id::text,
+			'quarantine:' || pr.quarantine_entry_id::text,
+			'mailbox:' || pr.mailbox_message_id::text,
+			'report:' || pr.id::text
+		))
+		  FROM phishing_reports pr
+		  LEFT JOIN mail_logs ml ON ml.id = pr.mail_log_id
+		  `+pWhere, pArgs...)
+	if err != nil {
+		httpx.WriteError(w, http.StatusInternalServerError, "phishing total failed")
+		return
+	}
 	emailTypes, err := h.countRows(r, "email_type", `
 		SELECT email_type, count(*)
 		  FROM (
@@ -683,10 +714,6 @@ func (h *Handler) summary(w http.ResponseWriter, r *http.Request) {
 	byDirection := map[string]int{}
 	for _, row := range directions {
 		byDirection[row.Key] = row.Count
-	}
-	phishingTotal := 0
-	for _, row := range phishingReports {
-		phishingTotal += row.Count
 	}
 	httpx.WriteJSON(w, http.StatusOK, Summary{
 		Window:           window,

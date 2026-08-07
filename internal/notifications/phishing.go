@@ -289,7 +289,10 @@ func alertFrom(ctx context.Context, db *pgxpool.Pool, orgID uuid.UUID) (*stdmail
 	if name == "" {
 		name = lookupSetting(ctx, db, nil, "ui.brand_name", "SentinelMail Gateway")
 	}
-	addr := lookupSetting(ctx, db, &orgID, "brand.support_email", "")
+	addr := lookupSetting(ctx, db, nil, "mail.system_from_address", "")
+	if addr == "" {
+		addr = lookupSetting(ctx, db, &orgID, "brand.support_email", "")
+	}
 	if addr == "" {
 		host := lookupSetting(ctx, db, nil, "mail.hostname", "sentinelmail.local")
 		addr = "no-reply@" + primaryDomain("x@"+host)

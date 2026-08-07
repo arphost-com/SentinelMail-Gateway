@@ -47,8 +47,22 @@ func TestAnalyzeIgnoresAuthenticatedSymbols(t *testing.T) {
 		"DMARC_POLICY_ALLOW": true,
 	})
 	got := Analyze("", symbols)
-	if got.Status != "" || got.Warning != "" || len(got.Signals) != 0 {
-		t.Fatalf("expected no warning, got %#v", got)
+	if got.Status != "authenticated" || got.Warning != "" || len(got.Signals) != 0 {
+		t.Fatalf("expected authenticated status without warning, got %#v", got)
+	}
+}
+
+func TestAnalyzeReportsMissingAuthentication(t *testing.T) {
+	symbols, _ := json.Marshal(map[string]any{
+		"AUTH_NA":    true,
+		"DMARC_NA":   true,
+		"R_DKIM_NA":  true,
+		"R_SPF_NA":   true,
+		"MIME_TRACE": true,
+	})
+	got := Analyze("", symbols)
+	if got.Status != "missing" || got.Warning != "" || len(got.Signals) != 0 {
+		t.Fatalf("expected missing authentication status without spoof warning, got %#v", got)
 	}
 }
 

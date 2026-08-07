@@ -39,38 +39,44 @@ import (
 )
 
 type Entry struct {
-	ID             uuid.UUID         `json:"id"`
-	OrganizationID uuid.UUID         `json:"organization_id"`
-	MailLogID      *uuid.UUID        `json:"mail_log_id,omitempty"`
-	DomainID       *uuid.UUID        `json:"domain_id,omitempty"`
-	FromAddr       *string           `json:"from_addr,omitempty"`
-	ToAddr         string            `json:"to_addr"`
-	Subject        *string           `json:"subject,omitempty"`
-	RspamdScore    *float64          `json:"rspamd_score,omitempty"`
-	ThreatClass    *string           `json:"threat_class,omitempty"`
-	ClientIP       *string           `json:"client_ip,omitempty"`
-	StorageKey     string            `json:"storage_key"`
-	SizeBytes      *int              `json:"size_bytes,omitempty"`
-	State          string            `json:"state"`
-	HasBlob        bool              `json:"has_blob"`
-	CanRelease     bool              `json:"can_release"`
-	EmailType      string            `json:"email_type"`
-	ScamWarning    string            `json:"scam_warning,omitempty"`
-	ScamSignals    []string          `json:"scam_signals,omitempty"`
-	ScamLinks      []classifier.Link `json:"scam_links,omitempty"`
-	AuthStatus     string            `json:"auth_status,omitempty"`
-	SpoofWarning   string            `json:"spoof_warning,omitempty"`
-	SpoofSignals   []string          `json:"spoof_signals,omitempty"`
-	Headers        []HeaderLine      `json:"headers,omitempty"`
-	ContentText    string            `json:"content_text,omitempty"`
-	RawExcerpt     string            `json:"raw_excerpt,omitempty"`
-	ExpiresAt      *time.Time        `json:"expires_at,omitempty"`
-	ReceivedAt     time.Time         `json:"received_at"`
-	ReleasedAt     *time.Time        `json:"released_at,omitempty"`
-	ReleasedBy     *uuid.UUID        `json:"released_by,omitempty"`
+	ID                uuid.UUID         `json:"id"`
+	OrganizationID    uuid.UUID         `json:"organization_id"`
+	MailLogID         *uuid.UUID        `json:"mail_log_id,omitempty"`
+	DomainID          *uuid.UUID        `json:"domain_id,omitempty"`
+	FromAddr          *string           `json:"from_addr,omitempty"`
+	ToAddr            string            `json:"to_addr"`
+	Subject           *string           `json:"subject,omitempty"`
+	RspamdScore       *float64          `json:"rspamd_score,omitempty"`
+	ThreatClass       *string           `json:"threat_class,omitempty"`
+	ClientIP          *string           `json:"client_ip,omitempty"`
+	StorageKey        string            `json:"storage_key"`
+	SizeBytes         *int              `json:"size_bytes,omitempty"`
+	State             string            `json:"state"`
+	HasBlob           bool              `json:"has_blob"`
+	CanRelease        bool              `json:"can_release"`
+	EmailType         string            `json:"email_type"`
+	ScamWarning       string            `json:"scam_warning,omitempty"`
+	ScamSignals       []string          `json:"scam_signals,omitempty"`
+	ScamLinks         []classifier.Link `json:"scam_links,omitempty"`
+	AuthStatus        string            `json:"auth_status,omitempty"`
+	SpoofWarning      string            `json:"spoof_warning,omitempty"`
+	SpoofSignals      []string          `json:"spoof_signals,omitempty"`
+	Symbols           json.RawMessage   `json:"symbols,omitempty"`
+	Headers           []HeaderLine      `json:"headers,omitempty"`
+	ContentText       string            `json:"content_text,omitempty"`
+	RawExcerpt        string            `json:"raw_excerpt,omitempty"`
+	ExpiresAt         *time.Time        `json:"expires_at,omitempty"`
+	ReceivedAt        time.Time         `json:"received_at"`
+	ReleasedAt        *time.Time        `json:"released_at,omitempty"`
+	ReleasedBy        *uuid.UUID        `json:"released_by,omitempty"`
+	CampaignID        *uuid.UUID        `json:"campaign_id,omitempty"`
+	CampaignCopies    int64             `json:"campaign_copies"`
+	SuppressedCopies  int64             `json:"suppressed_copies"`
+	UniqueSourceIPs   int               `json:"unique_source_ips"`
+	CampaignFirstSeen *time.Time        `json:"campaign_first_seen,omitempty"`
+	CampaignLastSeen  *time.Time        `json:"campaign_last_seen,omitempty"`
 
-	mailLogReason  *string
-	mailLogSymbols json.RawMessage
+	mailLogReason *string
 }
 
 type HeaderLine struct {
@@ -84,13 +90,21 @@ const cols = `id, organization_id, mail_log_id, domain_id, from_addr, to_addr, s
               (SELECT client_ip::text FROM mail_logs ml WHERE ml.id = quarantine_entries.mail_log_id),
               expires_at, received_at, released_at, released_by,
               (SELECT reason FROM mail_logs ml WHERE ml.id = quarantine_entries.mail_log_id),
-              COALESCE((SELECT symbols FROM mail_logs ml WHERE ml.id = quarantine_entries.mail_log_id), '{}'::jsonb)`
+              COALESCE((SELECT symbols FROM mail_logs ml WHERE ml.id = quarantine_entries.mail_log_id), '{}'::jsonb),
+              campaign_id,
+              COALESCE((SELECT message_count FROM mail_campaigns mc WHERE mc.id = quarantine_entries.campaign_id), 1),
+              COALESCE((SELECT suppressed_count FROM mail_campaigns mc WHERE mc.id = quarantine_entries.campaign_id), 0),
+              COALESCE((SELECT unique_source_ips FROM mail_campaigns mc WHERE mc.id = quarantine_entries.campaign_id), 0),
+              (SELECT first_seen FROM mail_campaigns mc WHERE mc.id = quarantine_entries.campaign_id),
+              (SELECT last_seen FROM mail_campaigns mc WHERE mc.id = quarantine_entries.campaign_id)`
 
 func scan(row pgx.Row, e *Entry) error {
 	err := row.Scan(&e.ID, &e.OrganizationID, &e.MailLogID, &e.DomainID,
 		&e.FromAddr, &e.ToAddr, &e.Subject, &e.RspamdScore, &e.ThreatClass,
 		&e.StorageKey, &e.SizeBytes, &e.State, &e.HasBlob, &e.ClientIP, &e.ExpiresAt,
-		&e.ReceivedAt, &e.ReleasedAt, &e.ReleasedBy, &e.mailLogReason, &e.mailLogSymbols)
+		&e.ReceivedAt, &e.ReleasedAt, &e.ReleasedBy, &e.mailLogReason, &e.Symbols,
+		&e.CampaignID, &e.CampaignCopies, &e.SuppressedCopies, &e.UniqueSourceIPs,
+		&e.CampaignFirstSeen, &e.CampaignLastSeen)
 	e.CanRelease = e.State == "held" && e.HasBlob
 	applyAnalysis(e)
 	return err
@@ -128,7 +142,7 @@ func applyAnalysis(e *Entry) {
 	if e.mailLogReason != nil {
 		reason = *e.mailLogReason
 	}
-	spoof := spoofing.Analyze(reason, e.mailLogSymbols)
+	spoof := spoofing.Analyze(reason, e.Symbols)
 	e.AuthStatus = spoof.Status
 	e.SpoofWarning = spoof.Warning
 	e.SpoofSignals = spoof.Signals
@@ -1553,18 +1567,22 @@ func entryStringValue(value *string) string {
 }
 
 type SourceIPReport struct {
-	IP             string        `json:"ip"`
-	NetworkName    string        `json:"network_name,omitempty"`
-	AbuseContacts  []string      `json:"abuse_contacts"`
-	ReportSubject  string        `json:"report_subject"`
-	ReportBody     string        `json:"report_body"`
-	CanSend        bool          `json:"can_send"`
-	Sent           bool          `json:"sent,omitempty"`
-	SentTo         []string      `json:"sent_to,omitempty"`
-	Warning        string        `json:"warning,omitempty"`
-	OutboundServer string        `json:"outbound_server,omitempty"`
-	SubmissionMode string        `json:"submission_mode"`
-	Webform        *AbuseWebform `json:"webform,omitempty"`
+	IP                       string        `json:"ip"`
+	NetworkName              string        `json:"network_name,omitempty"`
+	AbuseContacts            []string      `json:"abuse_contacts"`
+	ReportSubject            string        `json:"report_subject"`
+	ReportBody               string        `json:"report_body"`
+	CanSend                  bool          `json:"can_send"`
+	Sent                     bool          `json:"sent,omitempty"`
+	SentTo                   []string      `json:"sent_to,omitempty"`
+	Warning                  string        `json:"warning,omitempty"`
+	OutboundServer           string        `json:"outbound_server,omitempty"`
+	SubmissionMode           string        `json:"submission_mode"`
+	Webform                  *AbuseWebform `json:"webform,omitempty"`
+	CampaignCopies           int64         `json:"campaign_copies,omitempty"`
+	UniqueSourceIPs          int           `json:"unique_source_ips,omitempty"`
+	CampaignSourceIPs        []string      `json:"campaign_source_ips,omitempty"`
+	CampaignSourcesTruncated bool          `json:"campaign_sources_truncated,omitempty"`
 }
 
 type AbuseWebform struct {
@@ -1686,23 +1704,32 @@ func (h *Handler) buildSourceIPReport(ctx context.Context, e *Entry) (*SourceIPR
 	if err != nil {
 		return nil, err
 	}
+	campaignIPs, truncated := h.campaignSourceIPs(ctx, e)
 	rdap, err := lookupRDAP(ctx, ip.String())
 	if err != nil {
 		report := &SourceIPReport{
-			IP:             ip.String(),
-			ReportSubject:  sanitizeHeader(reportSubjectForThreat(e, ip.String())),
-			Warning:        "RDAP lookup is temporarily unavailable. Try again in a few minutes; the report cannot be sent until an abuse contact is found.",
-			SubmissionMode: "email",
+			IP:                       ip.String(),
+			ReportSubject:            sanitizeHeader(reportSubjectForThreat(e, ip.String())),
+			Warning:                  "RDAP lookup is temporarily unavailable. Try again in a few minutes; the report cannot be sent until an abuse contact is found.",
+			SubmissionMode:           "email",
+			CampaignCopies:           e.CampaignCopies,
+			UniqueSourceIPs:          e.UniqueSourceIPs,
+			CampaignSourceIPs:        campaignIPs,
+			CampaignSourcesTruncated: truncated,
 		}
 		report.ReportBody = buildAbuseReportBody(e, report)
 		return report, nil
 	}
 	report := &SourceIPReport{
-		IP:             ip.String(),
-		NetworkName:    rdap.Name,
-		AbuseContacts:  rdap.AbuseContacts,
-		ReportSubject:  sanitizeHeader(reportSubjectForThreat(e, ip.String())),
-		SubmissionMode: "email",
+		IP:                       ip.String(),
+		NetworkName:              rdap.Name,
+		AbuseContacts:            rdap.AbuseContacts,
+		ReportSubject:            sanitizeHeader(reportSubjectForThreat(e, ip.String())),
+		SubmissionMode:           "email",
+		CampaignCopies:           e.CampaignCopies,
+		UniqueSourceIPs:          e.UniqueSourceIPs,
+		CampaignSourceIPs:        campaignIPs,
+		CampaignSourcesTruncated: truncated,
 	}
 	report.ReportBody = buildAbuseReportBody(e, report)
 	if isWorldstreamAbuseProvider(rdap) {
@@ -1732,6 +1759,35 @@ func (h *Handler) buildSourceIPReport(ctx context.Context, e *Entry) (*SourceIPR
 	report.CanSend = true
 	report.OutboundServer = net.JoinHostPort(host, port)
 	return report, nil
+}
+
+func (h *Handler) campaignSourceIPs(ctx context.Context, e *Entry) ([]string, bool) {
+	if h == nil || h.DB == nil || e == nil || e.CampaignID == nil {
+		return nil, false
+	}
+	rows, err := h.DB.Query(ctx, `
+		SELECT client_ip::text
+		  FROM mail_campaign_sources
+		 WHERE campaign_id = $1
+		 ORDER BY hit_count DESC, first_seen
+		 LIMIT 101
+	`, *e.CampaignID)
+	if err != nil {
+		return nil, false
+	}
+	defer rows.Close()
+	values := []string{}
+	for rows.Next() {
+		var value string
+		if rows.Scan(&value) == nil {
+			values = append(values, value)
+		}
+	}
+	truncated := len(values) > 100
+	if truncated {
+		values = values[:100]
+	}
+	return values, truncated
 }
 
 func parseReportableSourceIP(value string) (netip.Addr, error) {
@@ -1969,6 +2025,14 @@ func buildAbuseReportBody(e *Entry, report *SourceIPReport) string {
 		"",
 		"SentinelMail Gateway",
 	}
+	if e.CampaignCopies > 1 {
+		campaignLines := []string{
+			fmt.Sprintf("Related campaign copies: %d", e.CampaignCopies),
+			fmt.Sprintf("Unique campaign source IPs: %d", e.UniqueSourceIPs),
+			fmt.Sprintf("Aggregated duplicate copies: %d", e.SuppressedCopies),
+		}
+		lines = append(lines[:14], append(campaignLines, lines[14:]...)...)
+	}
 	return strings.Join(lines, "\r\n")
 }
 
@@ -2016,7 +2080,7 @@ func isWorldstreamAbuseProvider(lookup *rdapLookup) bool {
 }
 
 func (h *Handler) worldstreamAbuseWebform(ctx context.Context, e *Entry, report *SourceIPReport) *AbuseWebform {
-	from := reportFrom(ctx, h.DB, e.OrganizationID)
+	contact := reportContact(ctx, h.DB, e.OrganizationID)
 	company := lookupOrgSetting(ctx, h.DB, e.OrganizationID, "brand.name", "")
 	if strings.TrimSpace(company) == "" {
 		company = lookupSystemSetting(ctx, h.DB, "ui.brand_name", "SentinelMail Gateway")
@@ -2035,7 +2099,7 @@ func (h *Handler) worldstreamAbuseWebform(ctx context.Context, e *Entry, report 
 		AdditionalInfo:       buildWorldstreamAdditionalInfo(e, report),
 		AttachmentNote:       "Attach the stored original-message.eml from this quarantine entry; it contains the complete message headers.",
 		ContactName:          contactName,
-		ContactEmail:         from.Address,
+		ContactEmail:         contact.Address,
 		CompanyName:          strings.TrimSpace(company),
 		PrivacyConfirmation:  "Review Worldstream's privacy policy in the browser, then tick this box if you agree.",
 		AccuracyConfirmation: "Tick this box only after reviewing that the copied SentinelMail evidence is true and accurate.",
@@ -2072,11 +2136,12 @@ func (h *Handler) sendAbuseReport(ctx context.Context, e *Entry, report *SourceI
 		return fmt.Errorf("no outbound relay configured")
 	}
 	from := reportFrom(ctx, h.DB, e.OrganizationID)
+	replyTo := reportContact(ctx, h.DB, e.OrganizationID)
 	evidence, err := h.originalReportEvidence(ctx, e)
 	if err != nil {
 		return err
 	}
-	raw := buildAbuseReportMessage(from.String(), report.AbuseContacts, report.ReportSubject, report.ReportBody, e, report, evidence)
+	raw := buildAbuseReportMessage(from.String(), replyTo.String(), report.AbuseContacts, report.ReportSubject, report.ReportBody, e, report, evidence)
 	relayPort, _ := strconv.Atoi(strings.TrimSpace(port))
 	quarantineEntryID := h.sentEmailQuarantineEntryID(ctx, e)
 	return sentemails.Send(ctx, h.DB, sentemails.Record{
@@ -2097,16 +2162,23 @@ func (h *Handler) sendAbuseReport(ctx context.Context, e *Entry, report *SourceI
 	})
 }
 
-func buildAbuseReportMessage(from string, to []string, subject, body string, e *Entry, report *SourceIPReport, evidence []byte) []byte {
+func buildAbuseReportMessage(from, replyTo string, to []string, subject, body string, e *Entry, report *SourceIPReport, evidence []byte) []byte {
 	boundary := "smg-abuse-" + uuid.NewString()
 	feedback := buildFeedbackReport(e, report)
-	var out bytes.Buffer
-	out.WriteString(strings.Join([]string{
+	headers := []string{
 		"From: " + from,
 		"To: " + strings.Join(to, ", "),
 		"Subject: " + sanitizeHeader(subject),
+	}
+	if strings.TrimSpace(replyTo) != "" && !strings.EqualFold(from, replyTo) {
+		headers = append(headers, "Reply-To: "+replyTo)
+	}
+	headers = append(headers,
 		"MIME-Version: 1.0",
-		`Content-Type: multipart/report; report-type=feedback-report; boundary="` + boundary + `"`,
+		`Content-Type: multipart/report; report-type=feedback-report; boundary="`+boundary+`"`,
+	)
+	var out bytes.Buffer
+	out.WriteString(strings.Join(append(headers, []string{
 		"",
 		"This is a multipart abuse report generated by SentinelMail Gateway.",
 		"",
@@ -2126,7 +2198,7 @@ func buildAbuseReportMessage(from string, to []string, subject, body string, e *
 		"Content-Type: message/rfc822",
 		`Content-Disposition: attachment; filename="original-message.eml"`,
 		"",
-	}, "\r\n"))
+	}...), "\r\n"))
 	out.Write(evidence)
 	out.WriteString("\r\n--" + boundary + "--\r\n")
 	return out.Bytes()
@@ -2287,7 +2359,10 @@ func sendPlainRelayMail(addr, from string, to []string, raw []byte) error {
 }
 
 func reportFrom(ctx context.Context, db *pgxpool.Pool, orgID uuid.UUID) *stdmail.Address {
-	addr := lookupOrgSetting(ctx, db, orgID, "brand.support_email", "")
+	addr := lookupSystemSetting(ctx, db, "mail.system_from_address", "")
+	if addr == "" {
+		addr = lookupOrgSetting(ctx, db, orgID, "brand.support_email", "")
+	}
 	if addr == "" {
 		host := lookupSystemSetting(ctx, db, "mail.hostname", "sentinelmail.local")
 		addr = "no-reply@" + domainPart(host)
@@ -2295,6 +2370,20 @@ func reportFrom(ctx context.Context, db *pgxpool.Pool, orgID uuid.UUID) *stdmail
 	parsed, err := stdmail.ParseAddress(addr)
 	if err != nil || parsed.Address == "" {
 		parsed = &stdmail.Address{Address: "no-reply@sentinelmail.local"}
+	}
+	name := lookupOrgSetting(ctx, db, orgID, "brand.name", "")
+	if name == "" {
+		name = lookupSystemSetting(ctx, db, "ui.brand_name", "SentinelMail Gateway")
+	}
+	parsed.Name = name
+	return parsed
+}
+
+func reportContact(ctx context.Context, db *pgxpool.Pool, orgID uuid.UUID) *stdmail.Address {
+	addr := lookupOrgSetting(ctx, db, orgID, "brand.support_email", "")
+	parsed, err := stdmail.ParseAddress(addr)
+	if err != nil || parsed.Address == "" {
+		return reportFrom(ctx, db, orgID)
 	}
 	name := lookupOrgSetting(ctx, db, orgID, "brand.name", "")
 	if name == "" {

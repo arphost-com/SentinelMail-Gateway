@@ -279,6 +279,7 @@ func TestBuildAbuseReportMessageAttachesOriginalMessage(t *testing.T) {
 	original := "From: phish@example.net\r\nSubject: Evidence\r\n\r\nbody"
 	raw := string(buildAbuseReportMessage(
 		"SentinelMail <no-reply@example.com>",
+		"Security Team <security@example.org>",
 		[]string{"abuse@example.net"},
 		"Phishing email from 203.0.113.5",
 		"Report body",
@@ -291,6 +292,7 @@ func TestBuildAbuseReportMessageAttachesOriginalMessage(t *testing.T) {
 		"Content-Type: message/feedback-report",
 		"Content-Type: message/rfc822",
 		"Content-Disposition: attachment; filename=\"original-message.eml\"",
+		"Reply-To: Security Team <security@example.org>",
 		original,
 		"Feedback-Type: abuse",
 		"Source-IP: 203.0.113.5",

@@ -4,6 +4,7 @@ package httpapi
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"net/http"
 	"time"
@@ -11,12 +12,14 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/redis/go-redis/v9"
 
 	"github.com/arphost/sentinelmail-gateway/internal/audit"
 	"github.com/arphost/sentinelmail-gateway/internal/auth"
 	"github.com/arphost/sentinelmail-gateway/internal/billing"
+	"github.com/arphost/sentinelmail-gateway/internal/brandintel"
 	"github.com/arphost/sentinelmail-gateway/internal/cluster"
 	"github.com/arphost/sentinelmail-gateway/internal/domains"
 	"github.com/arphost/sentinelmail-gateway/internal/gateways"
@@ -44,11 +47,16 @@ type Server struct {
 	secure        bool
 	ingestSecret  []byte
 	sessionSecret []byte // reused as MFA challenge signer
+	brandCatalog  *brandintel.Catalog
 	router        *chi.Mux
 }
 
 func New(log *slog.Logger, db *pgxpool.Pool, rdb *redis.Client, version string, secure bool, ingestSecret, sessionSecret []byte) *Server {
-	s := &Server{log: log, db: db, rdb: rdb, version: version, secure: secure, ingestSecret: ingestSecret, sessionSecret: sessionSecret}
+	s := &Server{
+		log: log, db: db, rdb: rdb, version: version, secure: secure,
+		ingestSecret: ingestSecret, sessionSecret: sessionSecret,
+		brandCatalog: brandintel.NewCatalog(db),
+	}
 	s.routes()
 	return s
 }
@@ -95,7 +103,7 @@ func (s *Server) routes() {
 
 		// HMAC-authenticated callbacks (rspamd, worker) — no session.
 		if len(s.ingestSecret) >= 16 {
-			r.Route("/mail", func(r chi.Router) { mail.MountIngest(r, s.db, s.rdb, s.ingestSecret) })
+			r.Route("/mail", func(r chi.Router) { mail.MountIngest(r, s.db, s.rdb, s.ingestSecret, s.brandCatalog) })
 			r.Route("/smtp", func(r chi.Router) { smtpevents.MountPublic(r, s.db, s.ingestSecret) })
 			r.Route("/scan-callback", func(r chi.Router) { scan.MountWorker(r, s.db, s.ingestSecret) })
 			r.Route("/billing-webhooks", func(r chi.Router) { billing.MountPublic(r, s.db, s.ingestSecret) })
@@ -124,6 +132,7 @@ func (s *Server) routes() {
 			r.Route("/org-settings", func(r chi.Router) { settings.MountOrg(r, s.db) })
 			r.Route("/sender-lists", func(r chi.Router) { senderlists.Mount(r, s.db) })
 			r.Route("/threat-feeds", func(r chi.Router) { threatfeed.MountHandler(r, s.db) })
+			r.Route("/brand-intelligence", func(r chi.Router) { brandintel.Mount(r, s.db, s.brandCatalog) })
 			r.Route("/scan", func(r chi.Router) { scan.MountSession(r, s.db, s.rdb, s.ingestSecret) })
 			r.Route("/audit-log", func(r chi.Router) { audit.Mount(r, s.db) })
 			r.Route("/smtp-events", func(r chi.Router) { smtpevents.Mount(r, s.db) })
@@ -162,6 +171,29 @@ func (s *Server) handleAPIHealth(w http.ResponseWriter, r *http.Request) {
 		resp["status"] = "degraded"
 	} else {
 		checks["redis"] = "ok"
+	}
+
+	var aiAvailable *bool
+	var aiReason *string
+	err := s.db.QueryRow(ctx, `
+		SELECT NULLIF(result->>'ai_available', '')::boolean,
+		       NULLIF(result->>'availability_reason', '')
+		  FROM scan_jobs
+		 WHERE kind = 'ai' AND state = 'done' AND result IS NOT NULL
+		 ORDER BY completed_at DESC NULLS LAST
+		 LIMIT 1
+	`).Scan(&aiAvailable, &aiReason)
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
+		checks["ai"] = "unknown: no completed AI analysis"
+	case err != nil:
+		checks["ai"] = "unknown: status unavailable"
+	case aiAvailable != nil && *aiAvailable:
+		checks["ai"] = "ok"
+	case aiReason != nil:
+		checks["ai"] = "unavailable: " + *aiReason
+	default:
+		checks["ai"] = "unavailable: provider is not configured"
 	}
 
 	w.Header().Set("Content-Type", "application/json")

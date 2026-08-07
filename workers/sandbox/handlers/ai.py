@@ -9,8 +9,9 @@ Payload:
       "headers":           {"Reply-To": "...", ...}   # optional
     }
 
-If ANTHROPIC_API_KEY is unset we still return a coarse verdict from a tiny
-keyword heuristic so the pipeline produces useful output in CI / dev.
+If ANTHROPIC_API_KEY is unset, the worker returns an explicit unavailable
+verdict. A coarse keyword assessment remains in result metadata, but it is
+never presented as a successful AI "clean" verdict.
 """
 
 from __future__ import annotations
@@ -64,15 +65,21 @@ def _client():
         return None
 
 
-def _heuristic_only(subject: str, body: str) -> dict[str, Any]:
+def _heuristic_only(
+    subject: str,
+    body: str,
+    *,
+    verdict: str = "unavailable",
+    unavailable_reason: str = "Anthropic API key is not configured",
+) -> dict[str, Any]:
     matches = sorted(set(m.lower() for m in PHISH_KEYWORDS.findall(subject + " " + body)))
     score = min(1.0, 0.25 * len(matches))
     if score >= 0.7:
-        verdict = "malicious"
+        heuristic_verdict = "malicious"
     elif score >= 0.3:
-        verdict = "suspicious"
+        heuristic_verdict = "suspicious"
     else:
-        verdict = "clean"
+        heuristic_verdict = "clean"
     return {
         "verdict": verdict,
         "result": {
@@ -81,7 +88,9 @@ def _heuristic_only(subject: str, body: str) -> dict[str, Any]:
             "label": "keyword-match" if matches else "no-signals",
             "reasons": matches,
             "model": None,
-            "ai_available": bool(API_KEY),
+            "ai_available": False,
+            "availability_reason": unavailable_reason,
+            "heuristic_verdict": heuristic_verdict,
         },
     }
 
@@ -111,8 +120,13 @@ def handle_ai(payload: dict[str, Any], _http: httpx.Client) -> dict[str, Any]:
         text = "".join(b.text for b in resp.content if getattr(b, "type", "") == "text")
     except Exception as e:                              # noqa: BLE001
         log.warning("anthropic.api_error", err=str(e))
-        out = _heuristic_only(subject, body)
-        out["result"]["api_error"] = str(e)
+        out = _heuristic_only(
+            subject,
+            body,
+            verdict="inconclusive",
+            unavailable_reason="Anthropic request failed",
+        )
+        out["result"]["api_error"] = type(e).__name__
         return out
 
     # Strip markdown fences if Claude wraps the JSON in ```json blocks.
@@ -130,9 +144,13 @@ def handle_ai(payload: dict[str, Any], _http: httpx.Client) -> dict[str, Any]:
         reasons = [str(r)[:200] for r in parsed.get("reasons", [])][:5]
     except (ValueError, TypeError, json.JSONDecodeError) as e:
         log.warning("anthropic.parse_error", err=str(e), raw=text[:200])
-        out = _heuristic_only(subject, body)
-        out["result"]["parse_error"] = str(e)
-        out["result"]["raw"] = text[:500]
+        out = _heuristic_only(
+            subject,
+            body,
+            verdict="inconclusive",
+            unavailable_reason="Anthropic returned an invalid response",
+        )
+        out["result"]["parse_error"] = type(e).__name__
         return out
 
     if score >= 0.7:

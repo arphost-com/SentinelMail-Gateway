@@ -51,6 +51,12 @@ Your installer or provider will give exact values. In most deployments:
 - `DKIM` remains configured at your outbound mail provider.
 - `DMARC` should stay enabled so SentinelMail can identify spoofed mail accurately.
 
+In an MSP-hosted deployment, SentinelMail system messages and abuse reports
+come from the provider's authenticated domain. You do not need to add the
+SentinelMail gateway IP to your customer domain's SPF record. Your customer
+support address may be used as `Reply-To` or as a webform contact without
+affecting DMARC alignment.
+
 Do not delete existing SPF, DKIM, or DMARC records during cutover unless your mail administrator tells you to.
 
 ## First Admin Tasks

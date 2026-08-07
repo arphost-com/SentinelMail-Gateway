@@ -43,12 +43,27 @@ def main():
 def parse_line(line):
     lowered = line.lower()
     event = base_event(line)
+    if "milter-discard:" in lowered:
+        event.update(parse_common_fields(line))
+        event["event_type"] = "discarded"
+        event["phase"] = "end_of_message"
+        event["reason"] = reason_after(line, "milter-discard:")
+        return compact(event)
     if "noqueue: reject:" in lowered or "milter-reject:" in lowered:
         event.update(parse_common_fields(line))
         event["event_type"] = "reject"
         event["phase"] = "end_of_message" if "milter-reject:" in lowered else "recipient"
         event["reason"] = reason_after(line, "reject:") or reason_after(line, "milter-reject:")
         event["status_code"] = first_status_code(line)
+        return compact(event)
+    if "status=sent" in lowered:
+        event.update(parse_common_fields(line))
+        event["event_type"] = "delivered"
+        event["phase"] = "delivery"
+        event["to_addr"] = angle_value(line, "to") or event.get("to_addr", "")
+        event["relay"] = field_value(line, "relay")
+        event["dsn"] = field_value(line, "dsn")
+        event["reason"] = paren_reason(line)
         return compact(event)
     if "status=deferred" in lowered or "status=bounced" in lowered or "status=expired" in lowered:
         event.update(parse_common_fields(line))

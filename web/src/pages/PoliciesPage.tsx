@@ -35,6 +35,8 @@ interface Policy {
     common_scam_malware_lure_enabled?: boolean;
     common_scam_health_miracle_enabled?: boolean;
     common_scam_home_services_enabled?: boolean;
+    campaign_threshold?: number;
+    campaign_action?: string;
   };
   is_default: boolean;
 }
@@ -66,6 +68,8 @@ interface Form {
   common_scam_malware_lure_enabled: boolean;
   common_scam_health_miracle_enabled: boolean;
   common_scam_home_services_enabled: boolean;
+  campaign_threshold: number;
+  campaign_action: string;
 }
 
 const ACTIONS = ["deliver", "tag", "quarantine", "reject"];
@@ -82,6 +86,8 @@ const DETECTION_DEFAULTS = {
   common_scam_malware_lure_enabled: true,
   common_scam_health_miracle_enabled: true,
   common_scam_home_services_enabled: true,
+  campaign_threshold: 25,
+  campaign_action: "aggregate",
 };
 const BRAND_OPTIONS: Array<{ key: keyof Form; label: string; help: string }> = [
   { key: "brand_impersonation_display_name_enabled", label: "Display name claims", help: "Hold mail when the sender display name claims a protected brand from an unrelated domain." },
@@ -238,6 +244,8 @@ export function PoliciesPage() {
             quarantine_action: editing.quarantine_action,
             sender_blacklist_enabled: editing.settings?.sender_blacklist_enabled ?? true,
             challenge_response_enabled: editing.settings?.challenge_response_enabled ?? false,
+            campaign_threshold: editing.settings?.campaign_threshold ?? 25,
+            campaign_action: editing.settings?.campaign_action ?? "aggregate",
             brand_impersonation_enabled: editing.settings?.brand_impersonation_enabled ?? true,
             brand_impersonation_display_name_enabled: editing.settings?.brand_impersonation_display_name_enabled ?? true,
             brand_impersonation_subject_enabled: editing.settings?.brand_impersonation_subject_enabled ?? true,
@@ -436,6 +444,36 @@ function PolicyModal({
           </div>
         </div>
 
+        <div className="md:col-span-2 grid gap-3 border-t border-border pt-3 md:grid-cols-2">
+          <Field
+            label="Repeated campaign threshold"
+            hint="2–10000 matching high-confidence messages before the escalation action applies"
+            help="SentinelMail always groups matching quarantined copies. This threshold controls when a repeated campaign is rejected or silently discarded."
+          >
+            <Input
+              type="number"
+              min={2}
+              max={10_000}
+              value={form.campaign_threshold}
+              onChange={(e) => setNum("campaign_threshold", e.target.value)}
+            />
+          </Field>
+          <Field
+            label="Repeated campaign action"
+            help="Aggregate keeps one representative quarantine item. Reject returns an SMTP rejection after the threshold. Discard accepts and silently drops threshold copies to avoid backscatter."
+          >
+            <select
+              value={form.campaign_action}
+              onChange={(e) => setForm({ ...form, campaign_action: e.target.value })}
+              className="block w-full rounded border border-border bg-surface px-3 py-2 text-fg"
+            >
+              <option value="aggregate">Aggregate only</option>
+              <option value="reject">Reject at SMTP</option>
+              <option value="discard">Accept and discard</option>
+            </select>
+          </Field>
+        </div>
+
         <div className="md:col-span-2 border-t border-border pt-3">
           <div className="flex flex-wrap items-center justify-between gap-2">
             <label className="inline-flex items-center gap-2 text-sm font-medium">
@@ -530,6 +568,8 @@ function toPolicyPayload(form: Form) {
     common_scam_malware_lure_enabled,
     common_scam_health_miracle_enabled,
     common_scam_home_services_enabled,
+    campaign_threshold,
+    campaign_action,
     ...rest
   } = form;
   return {
@@ -549,6 +589,8 @@ function toPolicyPayload(form: Form) {
       common_scam_malware_lure_enabled,
       common_scam_health_miracle_enabled,
       common_scam_home_services_enabled,
+      campaign_threshold,
+      campaign_action,
     },
   };
 }

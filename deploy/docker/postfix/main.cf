@@ -54,7 +54,10 @@ smtpd_recipient_restrictions =
 
 # Rspamd milter (proxy + scan + DKIM)
 milter_protocol = 6
-milter_default_action = accept
+# A mail-security gateway must not silently bypass scanning when the milter
+# returns an application error. A temporary failure lets the sender retry after
+# Rspamd recovers without accepting an unscanned message downstream.
+milter_default_action = tempfail
 smtpd_milters = inet:rspamd:11332
 non_smtpd_milters = inet:rspamd:11332
 milter_mail_macros = i {mail_addr} {client_addr} {client_name} {auth_type} {auth_authen}

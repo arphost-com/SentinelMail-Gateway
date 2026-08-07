@@ -28,6 +28,12 @@ interface MailLog {
   symbols?: Record<string, unknown> | null;
   disposition: string;
   reason?: string;
+  terminal_action?: string;
+  terminal_status_code?: string;
+  terminal_reason?: string;
+  terminal_relay?: string;
+  terminal_at?: string;
+  delivery_mismatch: boolean;
   email_type: string;
   scam_warning?: string;
   scam_signals?: string[];
@@ -76,7 +82,7 @@ export function MailLogsPage() {
   const outcome = params.get("outcome") ?? params.get("disposition") ?? "";
   const direction = params.get("direction") ?? "";
   const search = params.get("q") ?? "";
-  const drilldownFilters = ["since", "until", "from", "to", "sender_domain", "domain", "symbol", "score_band", "email_type", "threat_category", "reason"]
+  const drilldownFilters = ["since", "until", "from", "to", "sender_domain", "domain", "symbol", "score_band", "email_type", "threat_category", "reason", "delivery_mismatch"]
     .map((key) => [key, params.get(key) ?? ""] as const)
     .filter(([, value]) => value);
   const [offset, setOffset] = useState(0);
@@ -148,8 +154,15 @@ export function MailLogsPage() {
       header: "Delivery outcome",
       sortValue: (l) => deliveryOutcome(l),
       render: (l) => (
-        <span className={`rounded border px-2 py-0.5 text-xs font-medium ${OUTCOME_STYLE[deliveryOutcome(l)] ?? "border-border bg-muted"}`}>
-          {deliveryOutcome(l)}
+        <span className="flex flex-wrap items-center gap-1">
+          <span className={`rounded border px-2 py-0.5 text-xs font-medium ${OUTCOME_STYLE[deliveryOutcome(l)] ?? "border-border bg-muted"}`}>
+            {deliveryOutcome(l)}
+          </span>
+          {l.delivery_mismatch && (
+            <span className="rounded border border-danger/60 bg-danger/10 px-2 py-0.5 text-xs font-semibold text-danger">
+              delivery mismatch
+            </span>
+          )}
         </span>
       ),
     },
@@ -247,6 +260,11 @@ export function MailLogsPage() {
 
       {detail && (
         <Modal open onClose={() => { setDetail(null); setActionResult(null); runAction.reset(); }} title={`Mail log ${detail.id.slice(0, 8)}`} wide>
+          {detail.delivery_mismatch && (
+            <div role="alert" className="mb-4 rounded border border-danger bg-danger/10 p-3 text-sm text-danger">
+              Critical delivery mismatch: SentinelMail classified this message as {detail.disposition}, but Postfix later recorded successful downstream delivery.
+            </div>
+          )}
           <dl className="grid grid-cols-3 gap-2 text-sm mb-3">
             <dt className="text-subtle">Received</dt>
             <dd className="col-span-2">{new Date(detail.received_at).toLocaleString()}</dd>
@@ -275,6 +293,16 @@ export function MailLogsPage() {
             <dd className="col-span-2 font-mono text-xs break-all">{detail.message_id ?? "—"}</dd>
             <dt className="text-subtle">Queue ID</dt>
             <dd className="col-span-2 font-mono text-xs">{detail.queue_id ?? "—"}</dd>
+            <dt className="text-subtle">Terminal SMTP action</dt>
+            <dd className="col-span-2">
+              <span className="font-mono text-xs">{detail.terminal_action ?? "pending or unavailable"}</span>
+              {detail.terminal_status_code && <span className="ml-2 text-subtle">status {detail.terminal_status_code}</span>}
+              {detail.terminal_at && <span className="ml-2 text-subtle">at {new Date(detail.terminal_at).toLocaleString()}</span>}
+            </dd>
+            <dt className="text-subtle">Terminal relay</dt>
+            <dd className="col-span-2 break-all font-mono text-xs">{detail.terminal_relay ?? "—"}</dd>
+            <dt className="text-subtle">Terminal reason</dt>
+            <dd className="col-span-2 break-words">{detail.terminal_reason ?? "—"}</dd>
             <dt className="text-subtle">Size</dt>
             <dd className="col-span-2 tabular-nums">{detail.size_bytes ?? 0} bytes</dd>
             <dt className="text-subtle">Rspamd</dt>

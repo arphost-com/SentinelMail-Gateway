@@ -13,7 +13,7 @@ const variantClasses: Record<Variant, string> = {
   primary: "bg-accent text-accentFg hover:opacity-90 disabled:opacity-50",
   secondary: "bg-muted text-fg hover:bg-border disabled:opacity-50",
   ghost: "bg-transparent text-fg hover:bg-muted",
-  danger: "bg-danger text-white hover:opacity-90 disabled:opacity-50",
+  danger: "bg-danger text-dangerFg hover:opacity-90 disabled:opacity-50",
 };
 
 const sizeClasses: Record<Size, string> = {

@@ -168,6 +168,11 @@ func AnalyzeCommonScam(subject, body string) Analysis {
 		return warn("Credential phishing", "Similar to common credential phishing: urgent account/security language asks the user to verify or sign in.",
 			links("CISA: Recognize and report phishing", "https://www.cisa.gov/secure-our-world/recognize-and-report-phishing", "FTC: Phishing scams", "https://consumer.ftc.gov/articles/how-recognize-and-avoid-phishing-scams"),
 			"account verification", "urgency", "credential request")
+	case any(text, "wallet", "digital wallet", "crypto wallet") &&
+		any(text, "restore access", "restore full", "sync now", "sync wallet", "verify wallet", "recover wallet", "unlock wallet", "connect wallet"):
+		return warn("Wallet access phishing", "Similar to crypto-wallet phishing: restore, sync, verification, recovery, unlock, or connection language pushes the user toward surrendering wallet access.",
+			links("FTC: Cryptocurrency scams", "https://consumer.ftc.gov/articles/what-know-about-cryptocurrency-and-scams", "CISA: Recognize and report phishing", "https://www.cisa.gov/secure-our-world/recognize-and-report-phishing"),
+			"wallet access lure", "account recovery request")
 	case any(text, "package", "delivery", "shipment", "courier", "tracking number") &&
 		any(text, "missed", "unpaid postage", "reschedule", "shipping preferences", "tracking"):
 		return warn("Package delivery scam", "Similar to common delivery scams: shipment or postage problem language pushes the user toward a link or payment.",
@@ -272,6 +277,8 @@ func normalizeSuspiciousText(value string) string {
 			return 'Y'
 		case 'Ζ', 'Ꮓ':
 			return 'Z'
+		case 'Ԝ':
+			return 'W'
 		case 'а', 'α':
 			return 'a'
 		case 'с', 'ϲ':
@@ -306,6 +313,8 @@ func normalizeSuspiciousText(value string) string {
 			return 'u'
 		case 'ѵ':
 			return 'v'
+		case 'ԝ':
+			return 'w'
 		case 'х':
 			return 'x'
 		case 'у':

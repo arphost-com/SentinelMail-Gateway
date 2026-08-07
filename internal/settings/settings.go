@@ -55,6 +55,7 @@ var DefaultKeys = []SettingMeta{
 
 	{Key: "mail.hostname", Label: "MX hostname", Description: "Postfix myhostname value. Restart postfix to apply.", Kind: KindString, Group: "mail"},
 	{Key: "mail.mynetworks", Label: "Trusted networks", Description: "Postfix mynetworks (space-separated CIDRs).", Kind: KindString, Group: "mail"},
+	{Key: "mail.system_from_address", Label: "Automated sender address", Description: "From address for abuse reports and system email. Its domain must authorize the configured relay with aligned SPF or DKIM.", Kind: KindString, Group: "mail"},
 	{Key: "mail.outbound_relay_host", Label: "Outbound relay host", Description: "Smarthost for outbound mail (blank = direct MX delivery).", Kind: KindString, Group: "mail"},
 	{Key: "mail.outbound_relay_port", Label: "Outbound relay port", Description: "Default 25 if relay host is set.", Kind: KindInt, Group: "mail"},
 
@@ -83,7 +84,7 @@ var DefaultKeys = []SettingMeta{
 // NULL). Editable by org_admin within their own org.
 var DefaultOrgKeys = []SettingMeta{
 	{Key: "brand.name", Label: "Organization name (for emails)", Description: "Overrides ui.brand_name for messages on behalf of this org.", Kind: KindString, Group: "brand"},
-	{Key: "brand.support_email", Label: "Support email", Description: "Shown to end users on quarantine release confirmations.", Kind: KindString, Group: "brand"},
+	{Key: "brand.support_email", Label: "Support email", Description: "Used as the tenant reply/contact address; automated mail uses the system sender.", Kind: KindString, Group: "brand"},
 	{Key: "alerts.admin_email", Label: "Admin alerts address", Description: "Where this org receives gateway notifications (suspicious mail, feed outages).", Kind: KindString, Group: "alerts"},
 	{Key: "message.retention_days", Label: "Inbox and quarantine retention (days)", Description: "Override the system default for this org. Default is 90; maximum is 365.", Kind: KindInt, Group: "retention", Min: &retentionMinDays, Max: &retentionMaxDays},
 	{Key: "digest.frequency", Label: "End-user digest frequency", Description: "How often end users get a quarantine summary email.", Kind: KindEnum, Options: []string{"off", "daily", "weekly"}, Group: "digest"},
