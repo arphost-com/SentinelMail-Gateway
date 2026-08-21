@@ -188,6 +188,64 @@ func ReleaseHeldForRecipient(ctx context.Context, db *pgxpool.Pool, mailLogID uu
 	return true, nil
 }
 
+// ReleaseDeepAnalysisHold delivers every still-held recipient copy after all
+// required asynchronous scans complete cleanly. It deliberately leaves the
+// original SMTP terminal action as discarded: the later quarantine release is
+// a separately audited downstream send, not evidence that the held original
+// leaked through.
+func ReleaseDeepAnalysisHold(ctx context.Context, db *pgxpool.Pool, mailLogID uuid.UUID) (int, error) {
+	h := &Handler{DB: db}
+	rows, err := db.Query(ctx, `
+		SELECT `+cols+`
+		  FROM quarantine_entries
+		 WHERE mail_log_id = $1
+		   AND state = 'held'
+		 ORDER BY received_at, to_addr
+	`, mailLogID)
+	if err != nil {
+		return 0, err
+	}
+	defer rows.Close()
+	entries := []Entry{}
+	for rows.Next() {
+		var entry Entry
+		if err := scan(rows, &entry); err != nil {
+			return 0, err
+		}
+		entries = append(entries, entry)
+	}
+	if err := rows.Err(); err != nil {
+		return 0, err
+	}
+	released := 0
+	for i := range entries {
+		if err := h.releaseMessage(ctx, &entries[i]); err != nil {
+			_, _ = db.Exec(ctx, `
+				UPDATE mail_logs
+				   SET deep_analysis_state = 'unavailable', deep_analysis_failure_reason = $2
+				 WHERE id = $1 AND deep_analysis_state = 'releasing'
+			`, mailLogID, err.Error())
+			return released, err
+		}
+		if _, err := db.Exec(ctx, `
+			UPDATE quarantine_entries
+			   SET state = 'released', released_at = now(), released_by = NULL
+			 WHERE id = $1 AND state = 'held'
+		`, entries[i].ID); err != nil {
+			return released, err
+		}
+		released++
+	}
+	_, err = db.Exec(ctx, `
+		UPDATE mail_logs
+		   SET deep_analysis_state = 'released',
+		       deep_analysis_released_at = now(),
+		       deep_analysis_failure_reason = NULL
+		 WHERE id = $1 AND deep_analysis_state = 'releasing'
+	`, mailLogID)
+	return released, err
+}
+
 func DeleteHeldForRecipient(ctx context.Context, db *pgxpool.Pool, mailLogID uuid.UUID, toAddr string) (bool, error) {
 	tag, err := db.Exec(ctx, `
 		UPDATE quarantine_entries
@@ -1399,6 +1457,26 @@ func (h *Handler) recordQuarantineClassification(ctx context.Context, e *Entry, 
 			return err
 		}
 	}
+	if domainPattern := classifier.SenderDomainPattern(sender); domainPattern != "" {
+		_, err := h.DB.Exec(ctx, `
+			INSERT INTO user_mail_classifications
+			  (organization_id, domain_id, user_email, from_addr, subject_fingerprint,
+			   verdict, sample_count, last_mailbox_message_id, last_mail_log_id,
+			   last_body_excerpt, created_by, updated_by)
+			VALUES ($1, $2, $3, $4, '', $5, 1, NULL, $6, '', $7, $7)
+			ON CONFLICT (organization_id, (lower(user_email)), (lower(from_addr)), subject_fingerprint)
+			DO UPDATE SET
+			  domain_id = EXCLUDED.domain_id,
+			  verdict = EXCLUDED.verdict,
+			  sample_count = user_mail_classifications.sample_count + 1,
+			  last_mail_log_id = EXCLUDED.last_mail_log_id,
+			  updated_by = EXCLUDED.updated_by,
+			  updated_at = now()
+		`, e.OrganizationID, e.DomainID, strings.ToLower(strings.TrimSpace(e.ToAddr)), domainPattern, verdict, e.MailLogID, ident.UserID)
+		if err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -1426,6 +1504,16 @@ func (h *Handler) recordQuarantineNotSpam(ctx context.Context, e *Entry, sender 
 		if err != nil {
 			return err
 		}
+	}
+	_, err := h.DB.Exec(ctx, `
+		DELETE FROM user_mail_classifications
+		 WHERE organization_id = $1
+		   AND lower(user_email) = $2
+		   AND lower(from_addr) = ANY($3)
+		   AND subject_fingerprint = ''
+	`, e.OrganizationID, strings.ToLower(strings.TrimSpace(e.ToAddr)), []string{strings.ToLower(strings.TrimSpace(sender)), classifier.SenderDomainPattern(sender)})
+	if err != nil {
+		return err
 	}
 	return h.recordQuarantineVerdict(ctx, e, ident, "not_spam")
 }

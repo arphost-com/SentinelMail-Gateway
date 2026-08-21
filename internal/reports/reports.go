@@ -60,6 +60,14 @@ type Summary struct {
 	Tagged           int           `json:"tagged"`
 	Failed           int           `json:"failed"`
 	BlockedTotal     int           `json:"blocked_total"`
+	Feedback         []CountRow    `json:"feedback"`
+	FalseNegatives   int           `json:"false_negatives"`
+	FalsePositives   int           `json:"false_positives"`
+	FeedbackCoverage int           `json:"feedback_coverage"`
+	DNSBLBlocked     int           `json:"dnsbl_blocked"`
+	AIJobs           int           `json:"ai_jobs"`
+	AIUnavailable    int           `json:"ai_unavailable"`
+	DeepAnalysis     []CountRow    `json:"deep_analysis"`
 }
 
 type AdminStats struct {
@@ -706,6 +714,93 @@ func (h *Handler) summary(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteError(w, http.StatusInternalServerError, "released summary failed")
 		return
 	}
+	feedback, err := h.countRows(r, "verdict", `
+		SELECT mm.verdict, count(*)
+		  FROM mailbox_messages mm
+		  JOIN mail_logs ml ON ml.id = mm.mail_log_id
+		  `+aliasWhere(where, "ml")+`
+		   AND mm.verdict <> 'unreviewed'
+		 GROUP BY mm.verdict
+		 ORDER BY count(*) DESC`, args...)
+	if err != nil {
+		httpx.WriteError(w, http.StatusInternalServerError, "feedback summary failed")
+		return
+	}
+	falseNegatives, err := h.count(r, `
+		SELECT count(*)
+		  FROM mailbox_messages mm
+		  JOIN mail_logs ml ON ml.id = mm.mail_log_id
+		  `+aliasWhere(where, "ml")+`
+		   AND mm.verdict IN ('spam', 'phishing', 'malware')
+		   AND ml.terminal_action = 'delivered'`, args...)
+	if err != nil {
+		httpx.WriteError(w, http.StatusInternalServerError, "false-negative summary failed")
+		return
+	}
+	falsePositives, err := h.count(r, `
+		SELECT count(*)
+		  FROM mailbox_messages mm
+		  JOIN mail_logs ml ON ml.id = mm.mail_log_id
+		  `+aliasWhere(where, "ml")+`
+		   AND mm.verdict = 'not_spam'
+		   AND ml.disposition IN ('tagged', 'quarantined', 'rejected')`, args...)
+	if err != nil {
+		httpx.WriteError(w, http.StatusInternalServerError, "false-positive summary failed")
+		return
+	}
+	feedbackCoverage, err := h.count(r, `
+		SELECT count(*)
+		  FROM mailbox_messages mm
+		  JOIN mail_logs ml ON ml.id = mm.mail_log_id
+		  `+aliasWhere(where, "ml")+`
+		   AND mm.verdict <> 'unreviewed'`, args...)
+	if err != nil {
+		httpx.WriteError(w, http.StatusInternalServerError, "feedback coverage failed")
+		return
+	}
+	dnsblBlocked, err := h.count(r, `
+		SELECT count(*)
+		  FROM mail_logs ml
+		  `+aliasWhere(where, "ml")+`
+		   AND EXISTS (
+		     SELECT 1 FROM jsonb_object_keys(COALESCE(ml.symbols, '{}'::jsonb)) sym(key)
+		      WHERE upper(sym.key) LIKE '%_BLOCKED' OR upper(sym.key) LIKE '%DNSFAIL%'
+		   )`, args...)
+	if err != nil {
+		httpx.WriteError(w, http.StatusInternalServerError, "DNSBL availability summary failed")
+		return
+	}
+	aiJobs, err := h.count(r, `
+		SELECT count(*)
+		  FROM scan_jobs sj
+		  JOIN mail_logs ml ON ml.id = sj.mail_log_id
+		  `+aliasWhere(where, "ml")+`
+		   AND sj.kind = 'ai'`, args...)
+	if err != nil {
+		httpx.WriteError(w, http.StatusInternalServerError, "AI job summary failed")
+		return
+	}
+	aiUnavailable, err := h.count(r, `
+		SELECT count(*)
+		  FROM scan_jobs sj
+		  JOIN mail_logs ml ON ml.id = sj.mail_log_id
+		  `+aliasWhere(where, "ml")+`
+		   AND sj.kind = 'ai'
+		   AND (sj.state = 'failed' OR lower(COALESCE(sj.verdict, '')) IN ('unavailable', 'inconclusive', 'failed'))`, args...)
+	if err != nil {
+		httpx.WriteError(w, http.StatusInternalServerError, "AI availability summary failed")
+		return
+	}
+	deepAnalysis, err := h.countRows(r, "state", `
+		SELECT ml.deep_analysis_state, count(*)
+		  FROM mail_logs ml
+		  `+aliasWhere(where, "ml")+`
+		 GROUP BY ml.deep_analysis_state
+		 ORDER BY count(*) DESC`, args...)
+	if err != nil {
+		httpx.WriteError(w, http.StatusInternalServerError, "deep-analysis summary failed")
+		return
+	}
 
 	byDisposition := map[string]int{}
 	for _, row := range dispositions {
@@ -742,6 +837,14 @@ func (h *Handler) summary(w http.ResponseWriter, r *http.Request) {
 		Tagged:           byDisposition["tagged"],
 		Failed:           byDisposition["failed"],
 		BlockedTotal:     blockedTotal,
+		Feedback:         feedback,
+		FalseNegatives:   falseNegatives,
+		FalsePositives:   falsePositives,
+		FeedbackCoverage: feedbackCoverage,
+		DNSBLBlocked:     dnsblBlocked,
+		AIJobs:           aiJobs,
+		AIUnavailable:    aiUnavailable,
+		DeepAnalysis:     deepAnalysis,
 	})
 }
 

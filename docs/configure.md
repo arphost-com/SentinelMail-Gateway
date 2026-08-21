@@ -111,32 +111,55 @@ You only need to extend it if:
 
 ---
 
-## Anthropic / Claude AI scoring
+## AI scoring provider
 
-The AI scan handler uses Claude when `ANTHROPIC_API_KEY` is set and falls back to a keyword heuristic otherwise. Both modes produce a verdict; Claude is more accurate.
+AI analysis stays in the asynchronous light worker. A super administrator
+configures every runtime option under **Configuration → System settings → AI
+analysis**:
 
-```
-ANTHROPIC_API_KEY=sk-ant-api03-...
-SMG_AI_MODEL=claude-haiku-4-5-20251001   # optional, sensible default
-```
+- AI mode: `disabled`, `suspicious`, or `all`
+- provider: `anthropic` or `openai`
+- model: optional; blank uses Claude Haiku 4.5 or GPT-5 mini
+- Anthropic API key
+- OpenAI API key
 
-Apply: `docker compose restart worker`.
+Keys are encrypted before storage in PostgreSQL, are masked on every settings
+read, and are never returned to the browser. `disabled` is the zero-cost default
+and queues no AI jobs. `suspicious` analyzes only mail already tagged or held by
+deterministic policy. Saving takes effect on the next eligible AI scan without
+restarting containers. Missing keys and provider errors remain
+explicitly unavailable or inconclusive; heuristics are supporting metadata only.
 
-Body is truncated to 8 KB before sending to Claude — keeps cost predictable and your sender's full body out of the prompt budget.
+Borderline mail can optionally be withheld before delivery while asynchronous
+analysis runs. This uses the existing quarantine-and-release path; AI and browser
+calls never move into the SMTP process. Clean mail is released once all required
+jobs finish. Suspicious, failed, inconclusive, or timed-out analysis remains held
+for manual review and never generates both an original delivery and a quarantine
+notice.
+
+`SMG_SETTINGS_ENCRYPTION_KEY` is the sole deployment-time requirement for this
+feature. Bootstrap/deploy generates it once in `deploy/docker/.env`; preserve it
+with backups. Losing or rotating it without re-entering the provider keys makes
+existing encrypted keys unreadable.
+
+Body text is truncated to 8 KB before either provider request. OpenAI requests
+use Structured Outputs and set `store=false`.
 
 ---
 
 ## Threat feeds
 
-System Settings → Threat feeds shows the five registered feeds with per-feed:
+System Settings → Threat feeds shows only providers with a working runtime implementation:
 - **Enabled** toggle
 - **Refresh interval** (30s – 24h)
-- **API key** (currently only OpenPhish needs one)
+- **API key** when the provider requires one
 - **Last refresh status** (ok / err / never)
 
 Toggles take effect within one refresh tick — no restart needed.
 
-**Contract:** a feed outage is always a "miss," never an error. Mail flow never blocks on feed availability.
+**Contract:** the SMTP decision path reads only local Redis-cached feed results.
+Provider and DNS queries warm that cache asynchronously for repeated campaign
+traffic. A feed outage is always a miss, never an SMTP error.
 
 ---
 
@@ -153,7 +176,12 @@ Under `/system-settings` — applies to the whole gateway:
 | `mail.outbound_relay_host` | string | (empty) | smarthost if you can't deliver directly (ISP blocks port 25) |
 | `mail.outbound_relay_port` | int | 25 | smarthost port |
 | `message.retention_days` | int | 90 | days before inbox copies and quarantined messages are purged; maximum 365 |
-| `quarantine.default_action` | enum | `tag` | what to do over threshold |
+| `quarantine.default_action` | enum | `quarantine` | what to do over threshold |
+| `ai.mode` | enum | `disabled` | zero-cost disabled, suspicious-only, or all mail |
+| `deep_analysis.enabled` | bool | false | withhold borderline mail until async analysis completes |
+| `deep_analysis.min_score` | int | 4 | lowest score eligible for an analysis hold |
+| `deep_analysis.timeout_minutes` | int | 15 | timeout before manual review is required |
+| `threat_intel.cached_enforcement` | bool | true | enforce local cached reputation hits |
 | `tls.mode` | enum | `off` | `off` \| `self_signed` \| `lets_encrypt` |
 | `tls.hostname` | string | (empty) | FQDN for the cert |
 | `tls.acme_email` | string | (empty) | Let's Encrypt contact |
@@ -179,6 +207,23 @@ Under `/org-settings` — applies to a single organization. Each key with the sa
 Under `/msp-settings` — shows your child organizations + a `+ New customer org` button. Each child org's `org_admin` manages their own org without seeing siblings.
 
 The MSP retains visibility across the whole subtree through Domains / Gateways / Quarantine / Users — the tenant scope walks the org parent chain.
+
+---
+
+## Common-scam policy controls
+
+Organization and domain policies can enable or disable the complete common-scam
+detector or individual categories. The **Health lead-generation spam** category
+uses only fast subject/body checks in the SMTP decision path. It requires a
+health or wellness topic, clickbait-style curiosity wording, and multiple
+independent claim, authority, sales, or click-through signals before holding a
+message. Valid SPF, DKIM, or DMARC authenticates the sender domain but does not
+make unsolicited health-offer mail wanted.
+
+The same category intentionally leaves ordinary care-team messages, neutral
+research summaries, and educational health newsletters alone. Disable
+`common_scam_health_miracle_enabled` only when an organization explicitly wants
+to bypass both health-miracle and health lead-generation detection.
 
 ---
 

@@ -130,7 +130,11 @@ Either no mail has flowed yet, OR your recipient domain isn't registered (see ab
 
 ### AI scan engine says `heuristic-fallback`
 
-`ANTHROPIC_API_KEY` isn't set in the worker env. Add it to `.env` and `docker compose restart worker`. See [configure.md](configure.md#anthropic--claude-ai-scoring).
+The selected provider is missing its database-backed key, the deployment
+encryption key cannot decrypt it, or the provider returned an error. Inspect the
+scan's `provider` and secret-safe `availability_reason`, then review
+**Configuration → System settings → AI analysis**. See
+[configure.md](configure.md#ai-scoring-provider).
 
 ### Sandbox scan returns `failed: navigation error`
 
@@ -175,6 +179,41 @@ If files only exist under `/home/smgcaddy/.local/share/caddy`, copy them into `/
 **Fix:** edit `.env` to match the UI values, then `docker compose restart caddy`.
 
 ## Threat feeds
+
+### URIBL_BLOCKED or DNSWL_BLOCKED appears on normal mail
+
+**Cause:** Rspamd performs DNS reputation lookups directly and DNSBL providers
+identify the recursive resolver that submitted each query. Docker's embedded
+DNS (`127.0.0.11`) only forwards to the host's configured upstreams. Shared or
+public upstream resolvers can exceed provider limits and receive refusal codes
+even while ordinary DNS names continue to resolve.
+
+SentinelMail runs a private, full-recursive Unbound service for Rspamd. It does
+not forward DNSBL queries through public resolvers. Docker DNS remains a
+fallback so a resolver failure degrades reputation checks instead of stopping
+mail flow.
+
+Unbound intentionally keeps `/var/lib/unbound/root.key` in the container layer,
+not a named volume. Each rebuilt image therefore starts from the current Alpine
+DNSSEC root anchors instead of allowing stale RFC 5011 rollover state to mask
+them. Upgrades from older releases can leave an unused `unbound_data` volume;
+the deployment does not delete it automatically because volume removal is a
+separate destructive maintenance action.
+
+After deployment, validate the provider-approved path from the Compose checkout:
+
+```bash
+./scripts/smoke-dns-reputation.sh
+```
+
+The smoke requires the providers' published test responses: URIBL
+`127.0.0.14`, DNSWL/DWL `127.0.10.0`, and DNSWL `amiblocked` equal to `no`.
+URIBL `127.0.0.1` and DNSWL `127.0.0.255` are refusal/blocked-source results,
+not positive spam listings. Do not score those refusal symbols as threats and
+do not bypass provider restrictions with another shared resolver. See the
+[Rspamd DNS guidance](https://docs.rspamd.com/faq/#how-do-i-configure-dns-resolution),
+[URIBL refusal policy](https://uribl.com/refused.shtml), and
+[DNSWL return-code guidance](https://www.dnswl.org/?page_id=15).
 
 ### Threat feed shows `error` in Settings → Threat feeds
 

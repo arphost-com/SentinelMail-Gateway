@@ -4,6 +4,7 @@
 package scan
 
 import (
+	"context"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
@@ -23,6 +24,8 @@ import (
 	"github.com/arphost/sentinelmail-gateway/internal/auth"
 	"github.com/arphost/sentinelmail-gateway/internal/httpapi/httpx"
 	"github.com/arphost/sentinelmail-gateway/internal/phishingreports"
+	"github.com/arphost/sentinelmail-gateway/internal/quarantine"
+	"github.com/arphost/sentinelmail-gateway/internal/settings"
 	"github.com/arphost/sentinelmail-gateway/internal/tenant"
 )
 
@@ -99,8 +102,17 @@ func MountSession(r chi.Router, db *pgxpool.Pool, rdb *redis.Client, secret []by
 // session middleware (the worker has no cookie).
 func MountWorker(r chi.Router, db *pgxpool.Pool, secret []byte) {
 	h := &Handler{DB: db, IngestSecret: secret}
+	r.Get("/ai-config", h.workerAIConfig)
 	r.Post("/{id}/result", h.workerResult)
 	r.Get("/{id}/payload", h.workerPayload)
+}
+
+func (h *Handler) workerAIConfig(w http.ResponseWriter, r *http.Request) {
+	if !h.verifySig([]byte("ai-config"), r.Header.Get("X-SMG-Signature")) {
+		httpx.WriteError(w, http.StatusUnauthorized, "bad signature")
+		return
+	}
+	httpx.WriteJSON(w, http.StatusOK, settings.LookupAIConfig(r.Context(), h.DB))
 }
 
 // workerPayload returns the full job (payload + result so far) for the worker
@@ -343,7 +355,99 @@ func (h *Handler) workerResult(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	if req.State == "done" || req.State == "failed" {
+		if err := h.reconcileDeepAnalysis(r.Context(), id); err != nil {
+			httpx.WriteError(w, http.StatusInternalServerError, "deep analysis: "+err.Error())
+			return
+		}
+	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func (h *Handler) reconcileDeepAnalysis(ctx context.Context, scanJobID uuid.UUID) error {
+	var mailLogID uuid.UUID
+	var analysisState string
+	err := h.DB.QueryRow(ctx, `
+		SELECT ml.id, ml.deep_analysis_state
+		  FROM scan_jobs sj
+		  JOIN mail_logs ml ON ml.id = sj.mail_log_id
+		 WHERE sj.id = $1
+	`, scanJobID).Scan(&mailLogID, &analysisState)
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			return nil
+		}
+		return err
+	}
+	if analysisState != "pending" {
+		return nil
+	}
+
+	var total, incomplete, aiJobs int
+	var hasThreat, hasUnavailable bool
+	err = h.DB.QueryRow(ctx, `
+		SELECT count(*)::int,
+		       count(*) FILTER (WHERE state NOT IN ('done', 'failed'))::int,
+		       count(*) FILTER (WHERE kind = 'ai')::int,
+		       COALESCE(bool_or(lower(COALESCE(verdict, '')) IN ('suspicious', 'malicious', 'phishing', 'malware')), false),
+		       COALESCE(bool_or(state = 'failed' OR lower(COALESCE(verdict, '')) IN ('unavailable', 'inconclusive', 'failed')), false)
+		  FROM scan_jobs
+		 WHERE mail_log_id = $1
+	`, mailLogID).Scan(&total, &incomplete, &aiJobs, &hasThreat, &hasUnavailable)
+	if err != nil {
+		return err
+	}
+	if hasThreat {
+		_, err = h.DB.Exec(ctx, `
+			UPDATE mail_logs
+			   SET deep_analysis_state = 'threat', deep_analysis_failure_reason = NULL
+			 WHERE id = $1 AND deep_analysis_state = 'pending'
+		`, mailLogID)
+		return err
+	}
+	if incomplete > 0 {
+		return nil
+	}
+	if total == 0 || aiJobs == 0 || hasUnavailable {
+		_, err = h.DB.Exec(ctx, `
+			UPDATE mail_logs
+			   SET deep_analysis_state = 'unavailable',
+			       deep_analysis_failure_reason = 'required asynchronous analysis did not complete cleanly'
+			 WHERE id = $1 AND deep_analysis_state = 'pending'
+		`, mailLogID)
+		return err
+	}
+	claim, err := h.DB.Exec(ctx, `
+		UPDATE mail_logs
+		   SET deep_analysis_state = 'releasing'
+		 WHERE id = $1 AND deep_analysis_state = 'pending'
+	`, mailLogID)
+	if err != nil {
+		return err
+	}
+	if claim.RowsAffected() == 0 {
+		return nil
+	}
+	_, err = quarantine.ReleaseDeepAnalysisHold(ctx, h.DB, mailLogID)
+	return err
+}
+
+// ResolveExpiredDeepAnalysis marks timed-out holds for manual review. It never
+// delivers on timeout, so a scanner outage cannot silently release suspicious
+// mail.
+func ResolveExpiredDeepAnalysis(ctx context.Context, db *pgxpool.Pool) (int64, error) {
+	tag, err := db.Exec(ctx, `
+		UPDATE mail_logs
+		   SET deep_analysis_state = 'unavailable',
+		       deep_analysis_failure_reason = 'deep analysis timed out; message remains held for manual review'
+		 WHERE deep_analysis_state IN ('pending', 'releasing')
+		   AND deep_analysis_deadline IS NOT NULL
+		   AND deep_analysis_deadline <= now()
+	`)
+	if err != nil {
+		return 0, err
+	}
+	return tag.RowsAffected(), nil
 }
 
 func (h *Handler) verifySig(body []byte, sigHex string) bool {

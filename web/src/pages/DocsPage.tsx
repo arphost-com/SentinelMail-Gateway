@@ -283,8 +283,8 @@ const SECTIONS: DocSection[] = [
             </tr>
             <tr className="border-t border-border">
               <td className="pr-3 py-1"><code>ai</code></td>
-              <td className="pr-3 py-1">Scores subject + body as phishing on 0..1. Heuristic keyword fallback if no Anthropic API key.</td>
-              <td className="py-1">Claude (Haiku 4.5 default)</td>
+              <td className="pr-3 py-1">Scores subject + body as phishing on 0..1. Missing providers remain explicitly unavailable.</td>
+              <td className="py-1">Claude or OpenAI Responses API</td>
             </tr>
             <tr className="border-t border-border">
               <td className="pr-3 py-1"><code>outbound</code></td>
@@ -315,9 +315,9 @@ const SECTIONS: DocSection[] = [
           writes a mail_log entry, quarantines if over threshold, then fans out scan jobs:
         </p>
         <ul className="list-disc pl-5 space-y-1 mt-2">
-          <li>Inbound message → one <code>ai</code> scan (subject + body).</li>
+          <li>Inbound message → an <code>ai</code> scan only when AI mode is <code>suspicious</code> or <code>all</code> and the selected provider is ready.</li>
           <li>Inbound with image attachments → one <code>qr</code> scan per image (capped at 5).</li>
-          <li>Inbound with URLs → one <code>sandbox</code> scan on the first URL.</li>
+          <li>Inbound with URLs → up to three prioritized <code>sandbox</code> scans.</li>
           <li>Outbound (SASL-authed sender) → one <code>outbound</code> scan.</li>
         </ul>
         <p className="mt-2">
@@ -352,9 +352,9 @@ const SECTIONS: DocSection[] = [
           <div>
             <dt className="font-semibold">System (admin only)</dt>
             <dd className="text-subtle text-sm">
-              Brand name, MX hostname, trusted networks, inbox/quarantine retention, default action
-              over threshold. New keys appear here automatically when added to the backend
-              schema.
+              Brand name, MX hostname, trusted networks, inbox/quarantine retention, default action,
+              cost-controlled AI mode/provider/key settings, deep-analysis holds, and cached threat
+              intelligence. New keys appear here automatically when added to the backend schema.
             </dd>
           </div>
           <div>
@@ -566,8 +566,9 @@ GET    /scan-callback/{id}/payload`}
           <div>
             <dt className="font-semibold">AI scan shows engine: heuristic-fallback</dt>
             <dd className="text-sm">
-              Anthropic API key isn't set. Add <code>ANTHROPIC_API_KEY=sk-ant-...</code> to{" "}
-              <code>.env</code> and restart the worker container to switch to Claude scoring.
+              The selected provider is missing its database-backed key, cannot decrypt it, or
+              returned an error. Review Configuration → System settings → AI analysis; saving
+              applies to the next scan without restarting the worker.
             </dd>
           </div>
           <div>

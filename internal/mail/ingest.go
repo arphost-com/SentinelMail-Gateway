@@ -31,6 +31,7 @@ import (
 	"github.com/arphost/sentinelmail-gateway/internal/notifications"
 	"github.com/arphost/sentinelmail-gateway/internal/policies"
 	"github.com/arphost/sentinelmail-gateway/internal/settings"
+	"github.com/arphost/sentinelmail-gateway/internal/threatfeed"
 )
 
 // Event is the payload Rspamd (via a small Lua snippet) POSTs after scanning.
@@ -78,10 +79,11 @@ type IngestHandler struct {
 	Redis  *redis.Client // for MVP 2 scan auto-trigger; nil disables it
 	Secret []byte        // shared with rspamd via SMG_INGEST_HMAC_KEY
 	Brands *brandintel.Catalog
+	Feeds  *threatfeed.Registry
 }
 
-func MountIngest(r chi.Router, db *pgxpool.Pool, rdb *redis.Client, secret []byte, brands *brandintel.Catalog) {
-	h := &IngestHandler{DB: db, Redis: rdb, Secret: secret, Brands: brands}
+func MountIngest(r chi.Router, db *pgxpool.Pool, rdb *redis.Client, secret []byte, brands *brandintel.Catalog, feeds *threatfeed.Registry) {
+	h := &IngestHandler{DB: db, Redis: rdb, Secret: secret, Brands: brands, Feeds: feeds}
 	r.Post("/events", h.handle)
 	r.Post("/sender-policy", h.senderPolicy)
 }
@@ -144,6 +146,7 @@ func (h *IngestHandler) handle(w http.ResponseWriter, r *http.Request) {
 	}
 	disposition, reason = applyRspamdSenderBlocklist(disposition, reason, &ev)
 	disposition, reason = applyReputationBlocklist(disposition, reason, &ev)
+	disposition, reason = h.applyCachedThreatIntelligence(r.Context(), disposition, reason, &ev)
 	disposition, reason = applyCommonScamDetectionWithPolicy(disposition, reason, pol, &ev)
 	disposition, reason = applyBrandImpersonationDetectionWithProfiles(disposition, reason, senderAction, pol, &ev, brandProfiles)
 	disposition, reason = applyThreatSignalDispositionWithPolicy(disposition, reason, pol, &ev)
@@ -156,10 +159,24 @@ func (h *IngestHandler) handle(w http.ResponseWriter, r *http.Request) {
 	}
 	disposition, reason = applySenderListAction(disposition, reason, senderAction, pol.SenderBlacklistEnabled())
 	disposition, reason = applyQuarantineFirst(disposition, reason, &ev)
+	senderResultAction := effectiveSenderListAction(senderAction, pol.SenderBlacklistEnabled())
+	deepAnalysisState := "not_required"
+	var deepAnalysisDeadline *time.Time
+	if shouldHoldForDeepAnalysis(r.Context(), h.DB, disposition, &ev) {
+		disposition = "quarantined"
+		reason = "pending deep analysis"
+		deepAnalysisState = "pending"
+		deadline := time.Now().Add(time.Duration(settings.LookupDeepAnalysisConfig(r.Context(), h.DB).TimeoutMinutes) * time.Minute)
+		deepAnalysisDeadline = &deadline
+	}
 
 	threatClass := ""
 	if disposition == "quarantined" {
-		threatClass = classifyThreatWithProfiles(&ev, brandAnalysisOptionsFromPolicy(pol), pol, brandProfiles)
+		if deepAnalysisState == "pending" {
+			threatClass = "PENDING_ANALYSIS"
+		} else {
+			threatClass = classifyThreatWithProfiles(&ev, brandAnalysisOptionsFromPolicy(pol), pol, brandProfiles)
+		}
 		if challenge.IsPendingReason(reason) {
 			threatClass = "CHALLENGE_RESPONSE"
 		}
@@ -186,6 +203,7 @@ func (h *IngestHandler) handle(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Persist mail log.
+	recordSenderListSymbol(&ev, senderResultAction)
 	symbolsJSON := []byte("{}")
 	if len(ev.Symbols) > 0 {
 		symbolsJSON, _ = json.Marshal(ev.Symbols)
@@ -195,14 +213,15 @@ func (h *IngestHandler) handle(w http.ResponseWriter, r *http.Request) {
 		INSERT INTO mail_logs (organization_id, domain_id, campaign_id, campaign_copy_number,
 		                       queue_id, message_id, direction,
 		                       from_addr, to_addrs, client_ip, helo, subject, size_bytes,
-		                       rspamd_score, rspamd_action, symbols, disposition, reason, received_at)
+		                       rspamd_score, rspamd_action, symbols, disposition, reason,
+		                       deep_analysis_state, deep_analysis_deadline, received_at)
 		VALUES ($1, $2, NULLIF($3, '00000000-0000-0000-0000-000000000000'::uuid), NULLIF($4,0),
 		        $5, $6, $7, $8, $9, NULLIF($10,'')::inet, $11, $12, $13,
-		        $14, $15, $16::jsonb, $17::mail_disposition, $18, now())
+		        $14, $15, $16::jsonb, $17::mail_disposition, $18, $19, $20, now())
 		RETURNING id
 	`, orgID, domainID, campaign.ID, campaign.MessageCount, ev.QueueID, ev.MessageID, ev.Direction,
 		ev.From, ev.To, ev.ClientIP, ev.Helo, ev.Subject, ev.SizeBytes,
-		ev.Score, ev.Action, symbolsJSON, disposition, reason).Scan(&mailLogID)
+		ev.Score, ev.Action, symbolsJSON, disposition, reason, deepAnalysisState, deepAnalysisDeadline).Scan(&mailLogID)
 	if err != nil {
 		httpx.WriteError(w, http.StatusInternalServerError, "log insert: "+err.Error())
 		return
@@ -301,7 +320,7 @@ func (h *IngestHandler) handle(w http.ResponseWriter, r *http.Request) {
 	var spawned []string
 	var scanErr error
 	if !suppressDuplicate {
-		spawned, scanErr = h.spawnScans(r.Context(), orgID, mailLogID, &ev)
+		spawned, scanErr = h.spawnScans(r.Context(), orgID, mailLogID, disposition, &ev)
 	}
 	scanErrStr := ""
 	if scanErr != nil {
@@ -318,7 +337,9 @@ func (h *IngestHandler) handle(w http.ResponseWriter, r *http.Request) {
 		"campaign_count":      campaign.MessageCount,
 		"campaign_action":     campaignAction,
 		"campaign_suppressed": suppressDuplicate,
+		"sender_action":       senderResultAction,
 	})
+	h.warmThreatIntelligence(&ev)
 }
 
 func readSignedBody(w http.ResponseWriter, r *http.Request, secret []byte, limit int64) ([]byte, error) {
@@ -424,15 +445,17 @@ const (
 // spawnScans enqueues async scans based on what rspamd surfaced. Returns the
 // kinds spawned and the first error encountered. Mail flow MUST NOT depend on
 // the scan layer — every error here is best-effort logged via the response.
-func (h *IngestHandler) spawnScans(ctx context.Context, orgID *uuid.UUID, mailLogID uuid.UUID, ev *Event) ([]string, error) {
+func (h *IngestHandler) spawnScans(ctx context.Context, orgID *uuid.UUID, mailLogID uuid.UUID, disposition string, ev *Event) ([]string, error) {
 	if h.Redis == nil || orgID == nil {
 		return nil, nil
 	}
 	spawned := []string{}
 	var firstErr error
 
-	// AI scoring for any inbound message that has something to read.
-	if ev.Direction == "inbound" && (ev.Subject != "" || ev.BodyText != "") {
+	// AI scoring is explicitly cost-controlled by the database-backed mode.
+	// Missing provider configuration creates no job instead of flooding the
+	// queue with unavailable results.
+	if ev.Direction == "inbound" && (ev.Subject != "" || ev.BodyText != "") && settings.ShouldQueueAI(ctx, h.DB, disposition) {
 		body := ev.BodyText
 		if len(body) > maxBodyForAI {
 			body = body[:maxBodyForAI]
@@ -503,6 +526,109 @@ func (h *IngestHandler) spawnScans(ctx context.Context, orgID *uuid.UUID, mailLo
 	return spawned, firstErr
 }
 
+func shouldHoldForDeepAnalysis(ctx context.Context, db *pgxpool.Pool, disposition string, ev *Event) bool {
+	if ev == nil || !strings.EqualFold(ev.Direction, "inbound") || disposition != "tagged" {
+		return false
+	}
+	config := settings.LookupDeepAnalysisConfig(ctx, db)
+	ai := settings.LookupAIConfig(ctx, db)
+	return deepAnalysisEligible(disposition, ev, config, ai)
+}
+
+func deepAnalysisEligible(disposition string, ev *Event, config settings.DeepAnalysisConfig, ai settings.AIConfig) bool {
+	return ev != nil && len(ev.To) == 1 && strings.EqualFold(ev.Direction, "inbound") && disposition == "tagged" &&
+		config.Enabled && ev.Score >= config.MinScore && ai.Available &&
+		(ai.Mode == "suspicious" || ai.Mode == "all")
+}
+
+type threatCandidate struct {
+	kind  threatfeed.Kind
+	value string
+}
+
+func (h *IngestHandler) applyCachedThreatIntelligence(ctx context.Context, disposition, reason string, ev *Event) (string, string) {
+	if h.Feeds == nil || ev == nil || disposition == "rejected" || disposition == "quarantined" {
+		return disposition, reason
+	}
+	var enabled bool
+	if err := h.DB.QueryRow(ctx, `SELECT COALESCE((value #>> '{}')::boolean, false) FROM system_settings WHERE organization_id IS NULL AND key = 'threat_intel.cached_enforcement'`).Scan(&enabled); err != nil || !enabled {
+		return disposition, reason
+	}
+	for _, candidate := range threatCandidates(ev) {
+		result, ok := h.Feeds.LookupCached(ctx, candidate.kind, candidate.value)
+		if !ok || !result.Hit {
+			continue
+		}
+		if ev.Symbols == nil {
+			ev.Symbols = map[string]any{}
+		}
+		ev.Symbols[threatFeedSymbol(result.Source)] = map[string]any{"score": 10, "group": "sentinelmail_threat_intel"}
+		return "quarantined", "cached threat intelligence hit: " + result.Source
+	}
+	return disposition, reason
+}
+
+func (h *IngestHandler) warmThreatIntelligence(ev *Event) {
+	if h.Feeds == nil || ev == nil {
+		return
+	}
+	candidates := threatCandidates(ev)
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		defer cancel()
+		for _, candidate := range candidates {
+			if ctx.Err() != nil {
+				return
+			}
+			h.Feeds.Warm(ctx, candidate.kind, candidate.value)
+		}
+	}()
+}
+
+func threatCandidates(ev *Event) []threatCandidate {
+	if ev == nil {
+		return nil
+	}
+	seen := map[string]bool{}
+	out := make([]threatCandidate, 0, 8)
+	add := func(kind threatfeed.Kind, value string) {
+		value = strings.TrimSpace(value)
+		key := string(kind) + "\x00" + strings.ToLower(value)
+		if value == "" || seen[key] || len(out) >= 8 {
+			return
+		}
+		seen[key] = true
+		out = append(out, threatCandidate{kind: kind, value: value})
+	}
+	add(threatfeed.KindIP, ev.ClientIP)
+	add(threatfeed.KindDomain, emailDomain(ev.From))
+	for _, raw := range ev.URLs {
+		if len(out) >= 8 {
+			break
+		}
+		u, err := url.Parse(strings.TrimSpace(raw))
+		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Hostname() == "" || u.User != nil {
+			continue
+		}
+		add(threatfeed.KindDomain, u.Hostname())
+		add(threatfeed.KindURL, u.String())
+	}
+	return out
+}
+
+func threatFeedSymbol(source string) string {
+	var b strings.Builder
+	b.WriteString("SMG_TF_")
+	for _, r := range strings.ToUpper(source) {
+		if (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') {
+			b.WriteRune(r)
+		} else {
+			b.WriteByte('_')
+		}
+	}
+	return strings.TrimRight(b.String(), "_")
+}
+
 func (h *IngestHandler) enqueue(ctx context.Context, orgID uuid.UUID, mailLogID *uuid.UUID, kind string, payload map[string]any) error {
 	payloadJSON, err := json.Marshal(payload)
 	if err != nil {
@@ -541,7 +667,7 @@ func decide(p *policies.Policy, ev *Event) (string, string) {
 	}
 	switch {
 	case ev.Score >= p.RejectThreshold:
-		return dispositionForPolicyAction(p.QuarantineAction), "score >= reject_threshold"
+		return "rejected", "score >= reject_threshold"
 	case ev.Score >= p.QuarantineThreshold:
 		return dispositionForPolicyAction(p.QuarantineAction), "score >= quarantine_threshold"
 	case ev.Score >= p.SpamThreshold:
@@ -618,6 +744,9 @@ func applyLearnedClassification(disposition, reason string, learned *classifier.
 
 func isHardGateReason(reason string) bool {
 	if strings.HasPrefix(reason, "sender authentication") ||
+		strings.HasPrefix(reason, "score >= quarantine_threshold") ||
+		strings.HasPrefix(reason, "score >= reject_threshold") ||
+		strings.HasPrefix(reason, "cached threat intelligence hit:") ||
 		strings.HasPrefix(reason, "sender failed DMARC") ||
 		strings.HasPrefix(reason, "sender failed SPF/DKIM") ||
 		strings.HasPrefix(reason, "malware signal hit") {
@@ -656,16 +785,50 @@ func applySenderListAction(disposition, reason, action string, blacklistEnabled 
 	return disposition, reason
 }
 
+func effectiveSenderListAction(action string, blacklistEnabled bool) string {
+	if action == "allow" || (action == "block" && blacklistEnabled) {
+		return action
+	}
+	return ""
+}
+
+func recordSenderListSymbol(ev *Event, action string) {
+	if ev == nil || (action != "allow" && action != "block") {
+		return
+	}
+	if ev.Symbols == nil {
+		ev.Symbols = make(map[string]any)
+	}
+	name := "SMG_SENDER_ALLOWLIST"
+	score := -20.0
+	if action == "block" {
+		name = "SMG_SENDER_BLACKLIST"
+		score = 20.0
+	}
+	ev.Symbols[name] = map[string]any{
+		"score":   score,
+		"group":   "sentinelmail",
+		"options": []string{},
+	}
+}
+
 func isAllowlistOverrideBlockedReason(reason string) bool {
 	if strings.HasPrefix(reason, "sender authentication") ||
+		strings.HasPrefix(reason, "score >= quarantine_threshold") ||
+		strings.HasPrefix(reason, "score >= reject_threshold") ||
+		strings.HasPrefix(reason, "cached threat intelligence hit:") ||
 		strings.HasPrefix(reason, "sender failed DMARC") ||
 		strings.HasPrefix(reason, "sender failed SPF/DKIM") ||
-		strings.HasPrefix(reason, "malware signal hit") {
+		strings.HasPrefix(reason, "malware signal hit") ||
+		strings.HasPrefix(reason, "user classified similar mail as spam") ||
+		strings.HasPrefix(reason, "user classified similar mail as phishing") ||
+		strings.HasPrefix(reason, "user classified similar mail as malware") {
 		return true
 	}
 	switch reason {
 	case "sender authentication results missing",
 		"sender matched blacklist",
+		"reputation blocklist hit",
 		challenge.ReasonPendingApproval:
 		return true
 	default:
@@ -740,7 +903,7 @@ func applyCommonScamDetectionWithPolicy(disposition, reason string, pol *policie
 			return disposition, reason
 		}
 		return "quarantined", "detected " + strings.ToLower(analysis.EmailType)
-	case "Wallet access phishing", "Payment support scam", "Tax document phishing", "Medical miracle scam", "Malware lure", "Health miracle spam", "Home services lead-gen spam":
+	case "Wallet access phishing", "Payment support scam", "Tax document phishing", "Medical miracle scam", "Malware lure", "Health miracle spam", "Health lead-generation spam", "Home services lead-gen spam":
 		return "quarantined", "detected " + strings.ToLower(analysis.EmailType)
 	default:
 		return disposition, reason
@@ -1201,7 +1364,7 @@ func classifyThreatWithProfiles(ev *Event, brandOpts brandAnalysisOptions, pol *
 			return "PHISHING"
 		case "Malware lure":
 			return "MALWARE"
-		case "Health miracle spam", "Home services lead-gen spam":
+		case "Health miracle spam", "Health lead-generation spam", "Home services lead-gen spam":
 			return "SPAM"
 		}
 	}
@@ -1239,7 +1402,7 @@ func commonScamCategorySlug(emailType string) string {
 		return "malware_lure"
 	case "Medical miracle scam":
 		return "health_miracle"
-	case "Health miracle spam":
+	case "Health miracle spam", "Health lead-generation spam":
 		return "health_miracle"
 	case "Home services lead-gen spam":
 		return "home_services"

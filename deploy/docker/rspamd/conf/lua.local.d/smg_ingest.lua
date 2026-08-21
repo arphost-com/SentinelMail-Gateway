@@ -10,8 +10,9 @@
   and ensure the env var SMG_INGEST_HMAC_KEY is set on the rspamd
   container. The Go side reads the same value from SMG_INGEST_HMAC_KEY.
 
-  Why this uses coro HTTP: quarantine, tagging, and blacklist dispositions
-  must be known before the milter result is returned to Postfix.
+  The task-bound asynchronous HTTP callback keeps the Rspamd task open until
+  quarantine, tagging, and blacklist dispositions are known, without sharing
+  coroutine resume state across concurrent messages.
 
   Caps (to keep the POST under the api's 16 MiB body limit):
     - body_text truncated to 16 KiB
@@ -27,7 +28,6 @@ local ucl           = require "ucl"          -- rspamd's bundled JSON encoder
 local hmac          = require "rspamd_cryptobox_hash"
 
 local api_url = "http://api:8080/api/v1/mail/events"
-local sender_policy_url = "http://api:8080/api/v1/mail/sender-policy"
 -- Same env var name as the Go side and the workers. Empty value = snippet
 -- no-ops gracefully (safe by default; never blocks mail flow).
 local secret  = os.getenv("SMG_INGEST_HMAC_KEY") or ""
@@ -150,11 +150,11 @@ local function decode_json(body)
   return parser:get_object()
 end
 
-local function signed_post_json(task, url, payload, timeout)
+local function signed_post_json(task, url, payload, timeout, callback)
   local body = ucl.to_format(payload, 'json-compact', true)
   local sig = hex_hmac_sha256(secret, body)
 
-  local http_err, response = rspamd_http.request({
+  rspamd_http.request({
     task = task,
     url = url,
     method = "POST",
@@ -163,29 +163,21 @@ local function signed_post_json(task, url, payload, timeout)
     body = body,
     timeout = timeout,
     no_ssl_verify = true,
+    max_size = 1024 * 1024,
+    callback = function(http_err, code, http_body)
+      if http_err then
+        callback(nil, tostring(http_err))
+        return
+      end
+      code = tonumber(code) or 0
+      http_body = http_body or ""
+      if code < 200 or code >= 300 then
+        callback(nil, "api status: " .. tostring(code) .. " body=" .. tostring(http_body))
+        return
+      end
+      callback(decode_json(http_body), nil)
+    end,
   })
-
-  if http_err then
-    return nil, tostring(http_err)
-  end
-  local code = tonumber(response and response.code) or 0
-  local http_body = (response and (response.content or response.body)) or ""
-  if code < 200 or code >= 300 then
-    return nil, "api status: " .. tostring(code) .. " body=" .. tostring(http_body or "")
-  end
-  return decode_json(http_body), nil
-end
-
-local function smtp_from(task)
-  local from = task:get_from("smtp") or {}
-  return (from[1] and from[1].addr) or ""
-end
-
-local function smtp_to(task)
-  local out = {}
-  local to = task:get_recipients("smtp") or {}
-  for _, a in ipairs(to) do table.insert(out, a.addr) end
-  return out
 end
 
 local function gather_symbols(task)
@@ -221,9 +213,9 @@ local function gather_symbols(task)
 end
 
 local function post_mail_event(task, source)
-  if secret == "" then return nil end
+  if secret == "" then return end
   local cached = task:cache_get("smg_mail_event_response")
-  if cached then return cached end
+  if cached then return end
 
   local from = task:get_from("smtp") or {}
   local to   = task:get_recipients("smtp") or {}
@@ -260,73 +252,57 @@ local function post_mail_event(task, source)
     attachments       = gather_image_attachments(task),
   }
 
-  local accepted, err = signed_post_json(task, api_url, payload, 8.0)
-  if err then
-    rspamd_logger.errx(task, "%s http error: %s", source or "SMG_INGEST", err)
-    return nil
-  end
-  -- Apply the terminal milter decision before any non-essential bookkeeping.
-  -- If result insertion, score adjustment, or task caching raises after the API
-  -- has persisted a quarantine, Postfix must still receive DISCARD.
-  if accepted and accepted.disposition == "quarantined" then
-    task:set_pre_result("discard", nil, "SentinelMail", 20.0, 1000)
-    task:insert_result("SMG_QUARANTINED", 20.0)
-    force_reject_score(task)
-  elseif accepted and accepted.disposition == "rejected" then
-    task:set_pre_result("reject", "message rejected by SentinelMail policy", "SentinelMail", 20.0, 1000)
-    task:insert_result("SMG_REJECTED", 20.0)
-    force_reject_score(task)
-  elseif accepted and accepted.disposition == "tagged" then
-    task:insert_result("SMG_TAGGED", 0.0)
-  end
-  local cache_ok, cache_err = pcall(function()
-    task:cache_set("smg_mail_event_response", accepted or {})
-  end)
-  if not cache_ok then
-    rspamd_logger.warnx(task, "%s cache error after decision: %s", source or "SMG_INGEST", cache_err)
-  end
-  rspamd_logger.infox(task, "%s api accepted", source or "SMG_INGEST")
-  return accepted
-end
-
-local sender_policy_symbol = rspamd_config:register_symbol({
-  name = "SMG_SENDER_POLICY",
-  type = "prefilter",
-  flags = "coro",
-  priority = 1,
-  callback = function(task)
-    if secret == "" then return end
-
-    local payload = {
-      from = smtp_from(task),
-      reply_to = gather_header(task, "Reply-To"),
-      to = smtp_to(task),
-    }
-    if (payload.from == "" and payload.reply_to == "") or #payload.to == 0 then return end
-
-    local policy, policy_err = signed_post_json(task, sender_policy_url, payload, 3.0)
-    if policy_err then
-      rspamd_logger.errx(task, "SMG_SENDER_POLICY http error: %s", policy_err)
+  signed_post_json(task, api_url, payload, 8.0, function(accepted, err)
+    if err then
+      rspamd_logger.errx(task, "%s http error: %s", source or "SMG_INGEST", err)
       return
     end
-    if not policy then return end
-    if policy.action == "allow" then
-      task:insert_result("SMG_SENDER_ALLOWLIST", -20.0)
-    elseif policy.action == "block" then
-      local reason = policy.reason or "sender matched blacklist"
-      task:insert_result("SMG_SENDER_BLACKLIST", 20.0)
-      local accepted = post_mail_event(task, "SMG_SENDER_POLICY_INGEST")
-      if not accepted or not accepted.disposition then
-        task:set_pre_result("reject", reason)
-      end
+    if not accepted then
+      rspamd_logger.errx(task, "%s returned an invalid response", source or "SMG_INGEST")
+      return
     end
-  end,
-})
+
+    -- Apply the terminal milter decision before any non-essential bookkeeping.
+    -- The task-bound asynchronous request keeps Rspamd's task open until this
+    -- callback returns, without sharing coroutine resume state across messages.
+    if accepted.disposition == "quarantined" then
+      -- `discard` is explicitly registered in actions.conf. Keep a reject
+      -- fallback as a hard fail-safe: once the API has persisted quarantine,
+      -- an action/configuration regression must never turn into delivery.
+      local discard_ok, discard_err = pcall(function()
+        task:set_pre_result("discard", nil, "SentinelMail", 20.0, 1000)
+      end)
+      if not discard_ok then
+        rspamd_logger.errx(task, "SMG quarantine discard failed; rejecting to prevent delivery: %s", discard_err)
+        task:set_pre_result("reject", "message withheld by SentinelMail quarantine", "SentinelMail", 20.0, 1000)
+      end
+      task:insert_result("SMG_QUARANTINED", 1.0)
+      force_reject_score(task)
+    elseif accepted.disposition == "rejected" then
+      task:set_pre_result("reject", "message rejected by SentinelMail policy", "SentinelMail", 20.0, 1000)
+      task:insert_result("SMG_REJECTED", 1.0)
+      force_reject_score(task)
+    elseif accepted.disposition == "tagged" then
+      task:insert_result("SMG_TAGGED", 1.0)
+    end
+    if accepted.sender_action == "allow" then
+      task:insert_result("SMG_SENDER_ALLOWLIST", 1.0)
+    elseif accepted.sender_action == "block" then
+      task:insert_result("SMG_SENDER_BLACKLIST", 1.0)
+    end
+    local cache_ok, cache_err = pcall(function()
+      task:cache_set("smg_mail_event_response", accepted)
+    end)
+    if not cache_ok then
+      rspamd_logger.warnx(task, "%s cache error after decision: %s", source or "SMG_INGEST", cache_err)
+    end
+    rspamd_logger.infox(task, "%s api accepted", source or "SMG_INGEST")
+  end)
+end
 
 local ingest_symbol = rspamd_config:register_symbol({
   name = "SMG_INGEST",
   type = "postfilter",
-  flags = "coro",
   priority = 10,
   callback = function(task)
     post_mail_event(task, "SMG_INGEST")
@@ -335,9 +311,9 @@ local ingest_symbol = rspamd_config:register_symbol({
 
 -- Every symbol passed to task:insert_result must be registered. Use Rspamd's
 -- virtual-symbol API: the table form of register_symbol does not attach these
--- result-only symbols to the coroutine parents in Rspamd 4.1.x.
-rspamd_config:register_virtual_symbol("SMG_SENDER_ALLOWLIST", 1.0, sender_policy_symbol)
-rspamd_config:register_virtual_symbol("SMG_SENDER_BLACKLIST", 1.0, sender_policy_symbol)
+-- result-only symbols to the parent callback in Rspamd 4.1.x.
+rspamd_config:register_virtual_symbol("SMG_SENDER_ALLOWLIST", 1.0, ingest_symbol)
+rspamd_config:register_virtual_symbol("SMG_SENDER_BLACKLIST", 1.0, ingest_symbol)
 rspamd_config:register_virtual_symbol("SMG_QUARANTINED", 1.0, ingest_symbol)
 rspamd_config:register_virtual_symbol("SMG_REJECTED", 1.0, ingest_symbol)
 rspamd_config:register_virtual_symbol("SMG_TAGGED", 1.0, ingest_symbol)

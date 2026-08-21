@@ -4,7 +4,7 @@ package httpapi
 import (
 	"context"
 	"encoding/json"
-	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"time"
@@ -12,7 +12,6 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/redis/go-redis/v9"
 
@@ -48,14 +47,16 @@ type Server struct {
 	ingestSecret  []byte
 	sessionSecret []byte // reused as MFA challenge signer
 	brandCatalog  *brandintel.Catalog
+	feedRegistry  *threatfeed.Registry
 	router        *chi.Mux
 }
 
-func New(log *slog.Logger, db *pgxpool.Pool, rdb *redis.Client, version string, secure bool, ingestSecret, sessionSecret []byte) *Server {
+func New(log *slog.Logger, db *pgxpool.Pool, rdb *redis.Client, version string, secure bool, ingestSecret, sessionSecret []byte, feeds *threatfeed.Registry) *Server {
 	s := &Server{
 		log: log, db: db, rdb: rdb, version: version, secure: secure,
 		ingestSecret: ingestSecret, sessionSecret: sessionSecret,
 		brandCatalog: brandintel.NewCatalog(db),
+		feedRegistry: feeds,
 	}
 	s.routes()
 	return s
@@ -103,7 +104,7 @@ func (s *Server) routes() {
 
 		// HMAC-authenticated callbacks (rspamd, worker) — no session.
 		if len(s.ingestSecret) >= 16 {
-			r.Route("/mail", func(r chi.Router) { mail.MountIngest(r, s.db, s.rdb, s.ingestSecret, s.brandCatalog) })
+			r.Route("/mail", func(r chi.Router) { mail.MountIngest(r, s.db, s.rdb, s.ingestSecret, s.brandCatalog, s.feedRegistry) })
 			r.Route("/smtp", func(r chi.Router) { smtpevents.MountPublic(r, s.db, s.ingestSecret) })
 			r.Route("/scan-callback", func(r chi.Router) { scan.MountWorker(r, s.db, s.ingestSecret) })
 			r.Route("/billing-webhooks", func(r chi.Router) { billing.MountPublic(r, s.db, s.ingestSecret) })
@@ -173,27 +174,23 @@ func (s *Server) handleAPIHealth(w http.ResponseWriter, r *http.Request) {
 		checks["redis"] = "ok"
 	}
 
-	var aiAvailable *bool
-	var aiReason *string
-	err := s.db.QueryRow(ctx, `
-		SELECT NULLIF(result->>'ai_available', '')::boolean,
-		       NULLIF(result->>'availability_reason', '')
-		  FROM scan_jobs
-		 WHERE kind = 'ai' AND state = 'done' AND result IS NOT NULL
-		 ORDER BY completed_at DESC NULLS LAST
-		 LIMIT 1
-	`).Scan(&aiAvailable, &aiReason)
+	ai := settings.LookupAIConfig(ctx, s.db)
 	switch {
-	case errors.Is(err, pgx.ErrNoRows):
-		checks["ai"] = "unknown: no completed AI analysis"
-	case err != nil:
-		checks["ai"] = "unknown: status unavailable"
-	case aiAvailable != nil && *aiAvailable:
-		checks["ai"] = "ok"
-	case aiReason != nil:
-		checks["ai"] = "unavailable: " + *aiReason
+	case ai.Mode == "disabled":
+		checks["ai"] = "disabled: no provider calls are queued"
+	case !ai.Available:
+		checks["ai"] = "unavailable: " + ai.AvailabilityReason
 	default:
-		checks["ai"] = "unavailable: provider is not configured"
+		checks["ai"] = "ready: " + ai.Provider + " (" + ai.Model + "), mode=" + ai.Mode
+	}
+
+	var failedFeeds int
+	if err := s.db.QueryRow(ctx, `SELECT count(*) FROM threat_feed_config WHERE enabled AND last_refresh_ok = false`).Scan(&failedFeeds); err != nil {
+		checks["threat_feeds"] = "unknown: status unavailable"
+	} else if failedFeeds > 0 {
+		checks["threat_feeds"] = fmt.Sprintf("degraded: %d enabled feed failures", failedFeeds)
+	} else {
+		checks["threat_feeds"] = "ok"
 	}
 
 	w.Header().Set("Content-Type", "application/json")

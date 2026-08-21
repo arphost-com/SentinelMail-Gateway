@@ -21,6 +21,7 @@ import (
 	"github.com/arphost/sentinelmail-gateway/internal/config"
 	"github.com/arphost/sentinelmail-gateway/internal/db"
 	"github.com/arphost/sentinelmail-gateway/internal/httpapi"
+	"github.com/arphost/sentinelmail-gateway/internal/scan"
 	"github.com/arphost/sentinelmail-gateway/internal/threatfeed"
 )
 
@@ -93,14 +94,14 @@ func serve() error {
 	// downgrades them to misses).
 	feedRegistry := threatfeed.NewRegistry(log, pool, rdb)
 	feedRegistry.Add(threatfeed.NewDNSBL("spamhaus_zen", "zen.spamhaus.org"))
-	feedRegistry.Add(threatfeed.NewDNSBL("spamhaus_dbl", "dbl.spamhaus.org"))
+	feedRegistry.Add(threatfeed.NewDomainBL("spamhaus_dbl", "dbl.spamhaus.org"))
 	feedRegistry.Add(threatfeed.NewDNSBL("spamcop", "bl.spamcop.net"))
 	feedRegistry.Add(threatfeed.NewURLhaus(nil))
-	feedRegistry.Add(brandintel.NewPhishTankFeed(pool, nil))
 	feedRegistry.Start(ctx)
 	defer feedRegistry.Stop()
 
 	startMessageRetentionPurgeLoop(ctx, log, pool)
+	startDeepAnalysisTimeoutLoop(ctx, log, pool)
 
 	// In prod we expect to sit behind TLS termination (nginx/web container or external LB).
 	// Honor X-Forwarded-Proto via middleware.RealIP; mark cookies Secure unless explicit dev.
@@ -108,7 +109,7 @@ func serve() error {
 
 	srv := &http.Server{
 		Addr:              cfg.HTTPAddr,
-		Handler:           httpapi.New(log, pool, rdb, version, secureCookies, []byte(cfg.IngestHMACKey), []byte(cfg.SessionSecret)).Handler(),
+		Handler:           httpapi.New(log, pool, rdb, version, secureCookies, []byte(cfg.IngestHMACKey), []byte(cfg.SessionSecret), feedRegistry).Handler(),
 		ReadHeaderTimeout: 10 * time.Second,
 		IdleTimeout:       60 * time.Second,
 	}
@@ -130,6 +131,28 @@ func serve() error {
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	return srv.Shutdown(shutdownCtx)
+}
+
+func startDeepAnalysisTimeoutLoop(ctx context.Context, log *slog.Logger, pool *pgxpool.Pool) {
+	go func() {
+		ticker := time.NewTicker(time.Minute)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				runCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+				count, err := scan.ResolveExpiredDeepAnalysis(runCtx, pool)
+				cancel()
+				if err != nil {
+					log.Warn("deep_analysis.timeout_failed", slog.String("error", err.Error()))
+				} else if count > 0 {
+					log.Warn("deep_analysis.timed_out", slog.Int64("messages", count))
+				}
+			}
+		}
+	}()
 }
 
 func startMessageRetentionPurgeLoop(ctx context.Context, log *slog.Logger, pool *pgxpool.Pool) {

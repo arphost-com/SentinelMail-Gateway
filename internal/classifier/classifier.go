@@ -43,6 +43,7 @@ type Link struct {
 }
 
 var subjectTokenRE = regexp.MustCompile(`[a-z0-9]+`)
+var lockedWordRE = regexp.MustCompile(`\blocked\b`)
 
 type AuthSignals struct {
 	SPFPass   bool
@@ -66,8 +67,25 @@ func Learn(ctx context.Context, db *pgxpool.Pool, obs Observation) error {
 	if err := upsert(ctx, db, obs, verdict, fingerprint, body); err != nil {
 		return err
 	}
+	if verdict == "not_spam" {
+		_, err := db.Exec(ctx, `
+			DELETE FROM user_mail_classifications
+			 WHERE organization_id = $1
+			   AND lower(user_email) = $2
+			   AND lower(from_addr) = ANY($3)
+			   AND subject_fingerprint = ''
+		`, obs.OrganizationID, normalizeEmail(obs.UserEmail), []string{normalizeEmail(obs.FromAddr), senderDomainKey(obs.FromAddr)})
+		return err
+	}
 	if shouldLearnSenderLevel(verdict, fingerprint, obs.FromAddr) {
-		return upsert(ctx, db, obs, verdict, "", body)
+		if err := upsert(ctx, db, obs, verdict, "", body); err != nil {
+			return err
+		}
+		if domainKey := senderDomainKey(obs.FromAddr); domainKey != "" {
+			domainObs := obs
+			domainObs.FromAddr = domainKey
+			return upsert(ctx, db, domainObs, verdict, "", body)
+		}
 	}
 	return nil
 }
@@ -97,10 +115,42 @@ func upsert(ctx context.Context, db *pgxpool.Pool, obs Observation, verdict, fin
 func Lookup(ctx context.Context, db *pgxpool.Pool, orgID uuid.UUID, userEmail, fromAddr, subject string) (*Match, error) {
 	fingerprint := SubjectFingerprint(subject)
 	m, err := lookup(ctx, db, orgID, userEmail, fromAddr, fingerprint, false)
-	if err != nil || m != nil || fingerprint == "" {
+	if err != nil || m != nil {
 		return m, err
 	}
-	return lookup(ctx, db, orgID, userEmail, fromAddr, "", true)
+	if fingerprint != "" {
+		m, err = lookup(ctx, db, orgID, userEmail, fromAddr, "", true)
+		if err != nil || m != nil {
+			return m, err
+		}
+	}
+	if domainKey := senderDomainKey(fromAddr); domainKey != "" {
+		return lookupDomain(ctx, db, orgID, userEmail, domainKey)
+	}
+	return nil, nil
+}
+
+func lookupDomain(ctx context.Context, db *pgxpool.Pool, orgID uuid.UUID, userEmail, domainKey string) (*Match, error) {
+	var m Match
+	err := db.QueryRow(ctx, `
+		SELECT verdict, sample_count
+		  FROM user_mail_classifications
+		 WHERE organization_id = $1
+		   AND lower(user_email) = $2
+		   AND lower(from_addr) = $3
+		   AND subject_fingerprint = ''
+		   AND verdict IN ('spam', 'phishing', 'malware')
+		   AND sample_count >= 2
+		 ORDER BY updated_at DESC
+		 LIMIT 1
+	`, orgID, normalizeEmail(userEmail), domainKey).Scan(&m.Verdict, &m.SampleCount)
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return &m, nil
 }
 
 func lookup(ctx context.Context, db *pgxpool.Pool, orgID uuid.UUID, userEmail, fromAddr, fingerprint string, threatOnly bool) (*Match, error) {
@@ -160,11 +210,28 @@ func normalizeEmail(value string) string {
 	return strings.ToLower(strings.TrimSpace(value))
 }
 
+func senderDomainKey(value string) string {
+	value = normalizeEmail(value)
+	at := strings.LastIndex(value, "@")
+	if at < 1 || at == len(value)-1 {
+		return ""
+	}
+	domain := strings.TrimSuffix(value[at+1:], ".")
+	if domain == "" || !strings.Contains(domain, ".") {
+		return ""
+	}
+	return "*@" + domain
+}
+
+// SenderDomainPattern returns the normalized wildcard key used for
+// tenant-scoped rotating-sender campaign learning.
+func SenderDomainPattern(value string) string { return senderDomainKey(value) }
+
 func AnalyzeCommonScam(subject, body string) Analysis {
 	text := normalizeSuspiciousText(subject + "\n" + body)
 	switch {
 	case any(text, "password", "verify your account", "confirm your account", "login", "sign in") &&
-		any(text, "urgent", "suspended", "locked", "unusual activity", "security alert"):
+		(any(text, "urgent", "suspended", "unusual activity", "security alert") || lockedWordRE.MatchString(text)):
 		return warn("Credential phishing", "Similar to common credential phishing: urgent account/security language asks the user to verify or sign in.",
 			links("CISA: Recognize and report phishing", "https://www.cisa.gov/secure-our-world/recognize-and-report-phishing", "FTC: Phishing scams", "https://consumer.ftc.gov/articles/how-recognize-and-avoid-phishing-scams"),
 			"account verification", "urgency", "credential request")
@@ -216,11 +283,17 @@ func AnalyzeCommonScam(subject, body string) Analysis {
 		return warn("Medical miracle scam", "Similar to common health scams: exaggerated cure or reversal claims use scientific-sounding authority and push the user toward a sales/video link.",
 			links("FTC: Common health scams", "https://consumer.ftc.gov/articles/common-health-scams", "FDA: Health fraud", "https://www.fda.gov/drugs/bioterrorism-and-drug-preparedness/how-spot-health-fraud"),
 			"health cure claim", "scientific authority lure", "video click-through")
-	case any(text, "scientists reveal", "doctors reveal", "astonishing", "breakthrough", "discovery", "secret", "miracle") &&
+	case (any(text, "scientists reveal", "doctors reveal", "astonishing", "secret", "miracle") ||
+		(any(text, "breakthrough", "discovery") &&
+			any(text, "click here", "watch the video", "video presentation", "buy now", "order now", "limited offer"))) &&
 		any(text, "back pain", "joint pain", "nerve pain", "blood sugar", "weight loss", "prostate", "tinnitus", "hearing", "vision", "neuropathy"):
 		return warn("Health miracle spam", "Similar to common health-product spam: miracle, secret, or discovery wording tied to pain, weight, or chronic-health claims.",
 			links("FTC: Health products compliance guidance", "https://www.ftc.gov/business-guidance/resources/health-products-compliance-guidance", "FTC: Report fraud", "https://reportfraud.ftc.gov/"),
 			"health miracle claim", "spam lead-generation wording")
+	case healthLeadGenerationSpam(text):
+		return warn("Health lead-generation spam", "Similar to health lead-generation spam: a medical or wellness topic is combined with several curiosity, exaggerated-claim, authority, or click-through signals.",
+			links("FTC: Common health scams", "https://consumer.ftc.gov/articles/common-health-scams", "FDA: Health fraud", "https://www.fda.gov/drugs/bioterrorism-and-drug-preparedness/how-spot-health-fraud"),
+			"health or wellness topic", "multiple lead-generation signals")
 	case any(text, "septic system", "roof", "windows", "gutter", "gutters", "hvac", "solar", "water heater", "foundation") &&
 		any(text, "working properly", "repair", "replacement", "inspection", "estimate", "quote", "contractor", "service", "homeowner"):
 		return warn("Home services lead-gen spam", "Similar to common home-services lead-generation spam: household repair or inspection wording sent without prior context.",
@@ -242,6 +315,57 @@ func AnalyzeCommonScam(subject, body string) Analysis {
 	default:
 		return Analysis{EmailType: "Clean or uncategorized"}
 	}
+}
+
+// healthLeadGenerationSpam catches recurring health-offer copy that can arrive
+// with valid authentication and low Rspamd scores. Requiring a clickbait-style
+// curiosity phrase, a health topic, and at least three weighted signals keeps
+// ordinary care messages and neutral educational newsletters out.
+func healthLeadGenerationSpam(text string) bool {
+	if !any(text,
+		"pancreas", "blood sugar", "brain health", "memory", "sleep problem",
+		"wake-up", "wake up", "3am", "3 am", "nail fungus", "toenail fungus",
+		"joint pain", "nerve pain", "back pain", "weight loss", "prostate",
+		"tinnitus", "hearing loss", "vision loss", "neuropathy",
+	) {
+		return false
+	}
+
+	curiosity := any(text,
+		"what if your", "what happens after", "could your", "starts with",
+		"this way", "explore practical", "you won't believe", "the real cause",
+	)
+	if !curiosity {
+		return false
+	}
+
+	score := 1
+	if any(text,
+		"miracle", "secret", "breakthrough", "shocking", "astonishing",
+		"cure", "reverse", "erase", "reset", "discovery", "simple trick",
+	) {
+		score += 2
+	}
+	if any(text,
+		"scientists", "doctors reveal", "doctor reveals", "researchers found",
+		"experts reveal", "university study",
+	) {
+		score++
+	}
+	if any(text,
+		"click here", "watch the video", "watch this", "video presentation",
+		"find out", "learn more", "see how", "discover how",
+	) {
+		score++
+	}
+	if any(text,
+		"buy now", "order now", "limited offer", "special offer", "risk free",
+		"supplement", "free bottle", "claim yours",
+	) {
+		score++
+	}
+
+	return score >= 3
 }
 
 func normalizeSuspiciousText(value string) string {

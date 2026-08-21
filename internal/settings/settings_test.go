@@ -74,6 +74,28 @@ func TestSystemSchemaIncludesAuthenticatedAutomatedSender(t *testing.T) {
 	assertMissingSetting(t, DefaultOrgKeys, "mail.system_from_address")
 }
 
+func TestSystemSchemaOmitsUnimplementedMVP3Controls(t *testing.T) {
+	for _, key := range []string{
+		"link_rewrite.enabled",
+		"sso.enabled",
+		"sso.provider",
+		"sso.issuer_url",
+		"sso.client_id",
+		"billing.provider",
+		"cluster.mode",
+	} {
+		assertMissingSetting(t, DefaultKeys, key)
+	}
+
+	for _, key := range []string{
+		"link_rewrite.public_base_url",
+		"billing.webhooks_enabled",
+		"cluster.node_id",
+	} {
+		assertHasSetting(t, DefaultKeys, key)
+	}
+}
+
 func assertHasSetting(t *testing.T, metas []SettingMeta, key string) {
 	t.Helper()
 	for _, meta := range metas {

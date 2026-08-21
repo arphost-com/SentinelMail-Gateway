@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1.7
-FROM golang:1.25-alpine AS build
+FROM golang:1.26.6-alpine AS build
 ARG CADDY_VERSION=v2.11.4
 
 RUN apk add --no-cache git

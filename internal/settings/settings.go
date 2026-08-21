@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -29,6 +30,7 @@ const (
 	KindInt    SettingKind = "int"
 	KindBool   SettingKind = "bool"
 	KindEnum   SettingKind = "enum"
+	KindSecret SettingKind = "secret"
 )
 
 type SettingMeta struct {
@@ -62,21 +64,25 @@ var DefaultKeys = []SettingMeta{
 	{Key: "message.retention_days", Label: "Inbox and quarantine retention (days)", Description: "Days before inbox copies and quarantined messages are automatically purged. Default is 90; maximum is 365.", Kind: KindInt, Group: "retention", Min: &retentionMinDays, Max: &retentionMaxDays},
 	{Key: "quarantine.default_action", Label: "Default action over threshold", Description: "Action taken when score crosses the quarantine threshold.", Kind: KindEnum, Options: []string{"deliver", "tag", "quarantine", "reject"}, Group: "quarantine"},
 
+	{Key: "ai.mode", Label: "AI analysis mode", Description: "Disabled uses no AI API calls. Suspicious only analyzes held or tagged mail. All messages analyzes every readable inbound message.", Kind: KindEnum, Options: []string{"disabled", "suspicious", "all"}, Group: "ai"},
+	{Key: "ai.provider", Label: "AI provider", Description: "Asynchronous analysis provider. Changes apply to the next AI scan.", Kind: KindEnum, Options: []string{"anthropic", "openai"}, Group: "ai"},
+	{Key: "ai.model", Label: "AI model", Description: "Optional model override. Blank uses the selected provider default.", Kind: KindString, Group: "ai"},
+	{Key: "ai.anthropic_api_key", Label: "Anthropic API key", Description: "Encrypted at rest. Leave unchanged to keep the stored key.", Kind: KindSecret, Group: "ai"},
+	{Key: "ai.openai_api_key", Label: "OpenAI API key", Description: "Encrypted at rest. Leave unchanged to keep the stored key.", Kind: KindSecret, Group: "ai"},
+	{Key: "deep_analysis.enabled", Label: "Hold borderline mail for deep analysis", Description: "Withholds suspicious score-band mail until asynchronous analysis releases it or confirms a threat. Keep disabled until Docker02 validation is complete.", Kind: KindBool, Group: "ai"},
+	{Key: "deep_analysis.min_score", Label: "Deep-analysis minimum score", Description: "Lowest Rspamd score eligible for a temporary deep-analysis hold.", Kind: KindInt, Group: "ai", Min: intPtr(0), Max: intPtr(30)},
+	{Key: "deep_analysis.timeout_minutes", Label: "Deep-analysis timeout (minutes)", Description: "Maximum pending time before the message remains held as unavailable for manual review.", Kind: KindInt, Group: "ai", Min: intPtr(1), Max: intPtr(120)},
+
+	{Key: "threat_intel.cached_enforcement", Label: "Enforce cached threat intelligence", Description: "Uses only local Redis-cached reputation results in the SMTP decision path; external lookups run asynchronously.", Kind: KindBool, Group: "threat_intel"},
+
 	// TLS termination handled by the Caddy front-end (see deploy task).
 	// Changing tls.mode requires a stack restart to take effect.
 	{Key: "tls.mode", Label: "TLS mode", Description: "off = plain HTTP. self_signed = local cert (browsers will warn). lets_encrypt = automatic certificate from Let's Encrypt (requires public DNS + port 80 reachable).", Kind: KindEnum, Options: []string{"off", "self_signed", "lets_encrypt"}, Group: "tls"},
 	{Key: "tls.hostname", Label: "Public hostname", Description: "FQDN the UI is served as (used as the SAN on self-signed certs and the ACME challenge identifier).", Kind: KindString, Group: "tls"},
 	{Key: "tls.acme_email", Label: "Let's Encrypt contact email", Description: "Required by ACME for expiry warnings.", Kind: KindString, Group: "tls"},
 
-	{Key: "link_rewrite.enabled", Label: "Enable link rewriting", Description: "Reserved MVP 3 switch for click-time URL protection. Requires a configured public base URL before mail-plane rewriting is enabled.", Kind: KindBool, Group: "link_rewrite"},
-	{Key: "link_rewrite.public_base_url", Label: "Public click URL", Description: "HTTPS base URL that rewritten links will use.", Kind: KindString, Group: "link_rewrite"},
-	{Key: "sso.enabled", Label: "Enable SSO", Description: "Reserved MVP 3 switch for external identity provider login.", Kind: KindBool, Group: "sso"},
-	{Key: "sso.provider", Label: "SSO provider type", Description: "OIDC or SAML provider family. Secrets stay in environment variables, not the settings table.", Kind: KindEnum, Options: []string{"oidc", "saml"}, Group: "sso"},
-	{Key: "sso.issuer_url", Label: "Issuer URL", Description: "Trusted IdP issuer URL.", Kind: KindString, Group: "sso"},
-	{Key: "sso.client_id", Label: "Client ID", Description: "Public client identifier for the IdP app registration.", Kind: KindString, Group: "sso"},
-	{Key: "billing.provider", Label: "Billing provider", Description: "Reserved MVP 3 billing integration selector.", Kind: KindEnum, Options: []string{"none", "whmcs", "custom"}, Group: "billing"},
-	{Key: "billing.webhooks_enabled", Label: "Enable billing webhooks", Description: "Reserved MVP 3 switch for account lifecycle webhooks.", Kind: KindBool, Group: "billing"},
-	{Key: "cluster.mode", Label: "Cluster mode", Description: "single keeps one-node behavior; multi is reserved for coordinated multi-node deployments.", Kind: KindEnum, Options: []string{"single", "multi"}, Group: "cluster"},
+	{Key: "link_rewrite.public_base_url", Label: "Public application URL", Description: "HTTPS base URL used in quarantine and review links sent by SentinelMail.", Kind: KindString, Group: "ui"},
+	{Key: "billing.webhooks_enabled", Label: "Enable billing webhooks", Description: "Accept HMAC-signed billing events at the provider webhook endpoint.", Kind: KindBool, Group: "billing"},
 	{Key: "cluster.node_id", Label: "Node ID", Description: "Stable identifier for this gateway node.", Kind: KindString, Group: "cluster"},
 }
 
@@ -92,11 +98,12 @@ var DefaultOrgKeys = []SettingMeta{
 }
 
 type Setting struct {
-	Key       string          `json:"key"`
-	Value     json.RawMessage `json:"value"`
-	Inherited bool            `json:"inherited,omitempty"`
-	UpdatedBy *uuid.UUID      `json:"updated_by,omitempty"`
-	UpdatedAt time.Time       `json:"updated_at"`
+	Key        string          `json:"key"`
+	Value      json.RawMessage `json:"value"`
+	Inherited  bool            `json:"inherited,omitempty"`
+	UpdatedBy  *uuid.UUID      `json:"updated_by,omitempty"`
+	UpdatedAt  time.Time       `json:"updated_at"`
+	Configured bool            `json:"configured,omitempty"`
 }
 
 type Handler struct{ DB *pgxpool.Pool }
@@ -138,12 +145,27 @@ func (h *Handler) list(w http.ResponseWriter, r *http.Request) {
 			httpx.WriteError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
+		maskSecretSetting(&s)
 		out = append(out, s)
 	}
 	httpx.WriteJSON(w, http.StatusOK, map[string]any{
 		"items":  out,
 		"schema": DefaultKeys,
 	})
+}
+
+func maskSecretSetting(setting *Setting) {
+	if setting == nil {
+		return
+	}
+	meta := settingMeta(setting.Key)
+	if meta == nil || meta.Kind != KindSecret {
+		return
+	}
+	var stored string
+	_ = json.Unmarshal(setting.Value, &stored)
+	setting.Configured = stored != ""
+	setting.Value = json.RawMessage(`""`)
 }
 
 func (h *Handler) patch(w http.ResponseWriter, r *http.Request) {
@@ -176,12 +198,27 @@ func (h *Handler) patch(w http.ResponseWriter, r *http.Request) {
 			httpx.WriteError(w, http.StatusBadRequest, k+": "+err.Error())
 			return
 		}
+		storedValue := string(v)
+		if meta := settingMeta(k); meta != nil && meta.Kind == KindSecret {
+			var plaintext string
+			if err := json.Unmarshal(v, &plaintext); err != nil {
+				httpx.WriteError(w, http.StatusBadRequest, k+": expected string")
+				return
+			}
+			encrypted, err := encryptSecret(plaintext)
+			if err != nil {
+				httpx.WriteError(w, http.StatusServiceUnavailable, "secret encryption is not configured")
+				return
+			}
+			encoded, _ := json.Marshal(encrypted)
+			storedValue = string(encoded)
+		}
 		_, err := tx.Exec(r.Context(), `
 			INSERT INTO system_settings (organization_id, key, value, updated_by, updated_at)
 			VALUES (NULL, $1, $2::jsonb, $3, now())
 			ON CONFLICT (key) WHERE organization_id IS NULL
 			DO UPDATE SET value = EXCLUDED.value, updated_by = EXCLUDED.updated_by, updated_at = now()
-		`, k, string(v), ident.UserID)
+		`, k, storedValue, ident.UserID)
 		if err != nil {
 			httpx.WriteError(w, http.StatusInternalServerError, "save "+k+": "+err.Error())
 			return
@@ -197,21 +234,18 @@ func (h *Handler) patch(w http.ResponseWriter, r *http.Request) {
 // validateValue does shape checks based on DefaultKeys; unknown keys pass
 // through (forward-compat, but no UI surface).
 func validateValue(key string, raw json.RawMessage) error {
-	var meta *SettingMeta
-	for i := range DefaultKeys {
-		if DefaultKeys[i].Key == key {
-			meta = &DefaultKeys[i]
-			break
-		}
-	}
+	meta := settingMeta(key)
 	if meta == nil {
 		return nil
 	}
 	switch meta.Kind {
-	case KindString:
+	case KindString, KindSecret:
 		var s string
 		if err := json.Unmarshal(raw, &s); err != nil {
 			return errors.New("expected string")
+		}
+		if meta.Kind == KindSecret && len(s) > 16384 {
+			return errors.New("secret is too long")
 		}
 	case KindInt:
 		var n int
@@ -247,6 +281,115 @@ func validateValue(key string, raw json.RawMessage) error {
 	}
 	return nil
 }
+
+func settingMeta(key string) *SettingMeta {
+	for i := range DefaultKeys {
+		if DefaultKeys[i].Key == key {
+			return &DefaultKeys[i]
+		}
+	}
+	return nil
+}
+
+type AIConfig struct {
+	Mode               string `json:"mode"`
+	Provider           string `json:"provider"`
+	Model              string `json:"model"`
+	APIKey             string `json:"api_key,omitempty"`
+	Available          bool   `json:"available"`
+	AvailabilityReason string `json:"availability_reason,omitempty"`
+}
+
+func LookupAIConfig(ctx context.Context, db rowQuerier) AIConfig {
+	values := map[string]string{}
+	for _, key := range []string{"ai.mode", "ai.provider", "ai.model", "ai.anthropic_api_key", "ai.openai_api_key"} {
+		var value string
+		if err := db.QueryRow(ctx, `SELECT value #>> '{}' FROM system_settings WHERE organization_id IS NULL AND key = $1`, key).Scan(&value); err == nil {
+			values[key] = value
+		}
+	}
+	provider := values["ai.provider"]
+	if provider == "" {
+		provider = "anthropic"
+	}
+	defaults := map[string]string{"anthropic": "claude-haiku-4-5-20251001", "openai": "gpt-5-mini"}
+	model, supported := defaults[provider]
+	if values["ai.model"] != "" {
+		model = values["ai.model"]
+	}
+	mode := normalizeAIMode(values["ai.mode"])
+	config := AIConfig{Mode: mode, Provider: provider, Model: model}
+	if mode == "disabled" {
+		config.AvailabilityReason = "AI analysis is disabled"
+		return config
+	}
+	if !supported {
+		config.AvailabilityReason = "unsupported AI provider"
+		return config
+	}
+	encrypted := values["ai."+provider+"_api_key"]
+	if encrypted == "" {
+		config.AvailabilityReason = provider + " API key is not configured"
+		return config
+	}
+	apiKey, err := decryptSecret(encrypted)
+	if err != nil {
+		config.AvailabilityReason = "stored AI key is unavailable"
+		return config
+	}
+	config.APIKey = apiKey
+	config.Available = true
+	return config
+}
+
+func normalizeAIMode(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "suspicious", "all":
+		return strings.ToLower(strings.TrimSpace(value))
+	default:
+		return "disabled"
+	}
+}
+
+// ShouldQueueAI keeps provider calls out of the SMTP hot path unless the
+// operator explicitly enables them. Suspicious mode is intentionally narrow:
+// mail must already be tagged or held by deterministic policy.
+func ShouldQueueAI(ctx context.Context, db rowQuerier, disposition string) bool {
+	config := LookupAIConfig(ctx, db)
+	if !config.Available {
+		return false
+	}
+	switch config.Mode {
+	case "all":
+		return true
+	case "suspicious":
+		return disposition == "tagged" || disposition == "quarantined"
+	default:
+		return false
+	}
+}
+
+type DeepAnalysisConfig struct {
+	Enabled        bool
+	MinScore       float64
+	TimeoutMinutes int
+}
+
+func LookupDeepAnalysisConfig(ctx context.Context, db rowQuerier) DeepAnalysisConfig {
+	config := DeepAnalysisConfig{MinScore: 4, TimeoutMinutes: 15}
+	_ = db.QueryRow(ctx, `SELECT COALESCE((value #>> '{}')::boolean, false) FROM system_settings WHERE organization_id IS NULL AND key = 'deep_analysis.enabled'`).Scan(&config.Enabled)
+	_ = db.QueryRow(ctx, `SELECT COALESCE((value #>> '{}')::double precision, 4) FROM system_settings WHERE organization_id IS NULL AND key = 'deep_analysis.min_score'`).Scan(&config.MinScore)
+	_ = db.QueryRow(ctx, `SELECT COALESCE((value #>> '{}')::int, 15) FROM system_settings WHERE organization_id IS NULL AND key = 'deep_analysis.timeout_minutes'`).Scan(&config.TimeoutMinutes)
+	if config.MinScore < 0 || config.MinScore > 30 {
+		config.MinScore = 4
+	}
+	if config.TimeoutMinutes < 1 || config.TimeoutMinutes > 120 {
+		config.TimeoutMinutes = 15
+	}
+	return config
+}
+
+func intPtr(value int) *int { return &value }
 
 func isAdmin(role string) bool {
 	return role == "super_admin" || role == "msp_admin" || role == "org_admin"

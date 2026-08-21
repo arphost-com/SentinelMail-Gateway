@@ -65,11 +65,31 @@ services:
       retries: 5
       start_period: 120s
 
+  unbound:
+    <<: *default-restart
+    build:
+      context: ./unbound
+    networks: [sentinelmail]
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    healthcheck:
+      # Liveness/readiness only. Provider reachability is a separate smoke
+      # gate so a DNSBL outage cannot prevent Rspamd's fallback from starting.
+      test: ["CMD-SHELL", "drill -p 5353 @127.0.0.1 localhost. A | grep -q 'IN.*A.*127.0.0.1'"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
   rspamd:
     <<: *default-restart
     build:
       context: ./rspamd
     depends_on:
+      unbound:
+        condition: service_healthy
       redis:
         condition: service_healthy
       clamav:
@@ -147,6 +167,7 @@ services:
       SMG_SESSION_SECRET: ${API_SESSION_SECRET:?session secret required (openssl rand -hex 32)}
       SMG_AUDIT_HMAC_KEY: ${API_AUDIT_HMAC_KEY:?audit hmac key required (openssl rand -hex 32)}
       SMG_INGEST_HMAC_KEY: ${SMG_INGEST_HMAC_KEY:-}
+      SMG_SETTINGS_ENCRYPTION_KEY: ${SMG_SETTINGS_ENCRYPTION_KEY:-}
       SMG_ENV: ${SMG_ENV:-docker}
       # Optional deployment-owned sender for abuse reports and system mail.
       # Its domain must authenticate this relay with aligned SPF or DKIM.
@@ -227,8 +248,6 @@ services:
       SMG_API_BASE: http://api:8080
       SMG_REDIS_URL: redis://redis:6379/0
       SMG_INGEST_HMAC_KEY: ${SMG_INGEST_HMAC_KEY:-}
-      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
-      SMG_AI_MODEL: ${SMG_AI_MODEL:-claude-haiku-4-5-20251001}
     networks: [sentinelmail]
     healthcheck:
       test: ["CMD", "python", "-c", "import sys; sys.exit(0)"]

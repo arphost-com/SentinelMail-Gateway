@@ -40,6 +40,14 @@ interface ReportsSummary {
   tagged: number;
   failed: number;
   blocked_total: number;
+  feedback: ChartRow[];
+  false_negatives: number;
+  false_positives: number;
+  feedback_coverage: number;
+  dnsbl_blocked: number;
+  ai_jobs: number;
+  ai_unavailable: number;
+  deep_analysis: ChartRow[];
 }
 
 interface PhishingReport {
@@ -134,6 +142,13 @@ export function ReportsPage() {
         <Metric label="Outbound" to={drilldownHref({ direction: "outbound" })} value={data?.outbound} loading={report.isLoading} tone="accent" total={data?.total} hint="of processed mail" />
         <Metric label="Sender blocklist" to={drilldownHref({ reason: "sender matched blacklist" })} value={data?.blocked_total} loading={report.isLoading} tone="danger" total={data?.total} hint="blocked by allow/block list" />
         <Metric label="Confirmed phishing" to="#phishing-reports" value={data?.phishing_total} loading={report.isLoading} tone="danger" total={data?.total} hint="user or scanner confirmed" />
+      </div>
+
+      <div className="grid gap-4 grid-cols-1 md:grid-cols-2 xl:grid-cols-4 mb-4">
+        <Metric label="Reported spam delivered" to="/mailbox?verdict=spam" value={data?.false_negatives} loading={report.isLoading} tone="danger" hint="confirmed false negatives" />
+        <Metric label="Wanted mail flagged" to="/mailbox?verdict=not_spam" value={data?.false_positives} loading={report.isLoading} tone="warning" hint="confirmed false positives" />
+        <Metric label="Messages reviewed" to="/mailbox" value={data?.feedback_coverage} loading={report.isLoading} tone="accent" hint="learning coverage" />
+        <Metric label="AI unavailable" to="/scan?kind=ai" value={data?.ai_unavailable} loading={report.isLoading} tone="warning" total={data?.ai_jobs} hint="of AI jobs" />
       </div>
 
       <div className="mb-4">

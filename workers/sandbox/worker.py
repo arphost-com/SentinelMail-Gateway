@@ -10,7 +10,7 @@ Handlers live in workers/sandbox/handlers/*.py and register themselves in
 handlers/__init__.py::HANDLERS.
 
 MVP 2 v1: qr (pyzbar + URLhaus lookup)
-MVP 2 v3: ai (Claude scoring, heuristic fallback)
+MVP 2 v3: ai (provider-selectable scoring, heuristic fallback)
 MVP 2 v4: outbound (BEC heuristics)
 MVP 2 v2: sandbox runs in a SEPARATE service (workers/sandbox-worker/) so
 the heavy Playwright + Chromium image doesn't bloat the light handlers.
@@ -71,6 +71,25 @@ class APIClient:
             log.warning("api.get_job_error", err=str(e), scan_id=scan_id)
         return None
 
+    def get_ai_config(self) -> dict[str, Any]:
+        signature = hmac.new(self.secret, b"ai-config", hashlib.sha256).hexdigest()
+        try:
+            response = self.http.get(
+                f"{self.base}/api/v1/scan-callback/ai-config",
+                headers={"X-SMG-Signature": signature},
+            )
+            if response.status_code == 200:
+                return response.json()
+            log.warning("api.ai_config_status", status=response.status_code)
+        except httpx.HTTPError as exc:
+            log.warning("api.ai_config_error", error_type=type(exc).__name__)
+        return {
+            "provider": "unknown",
+            "model": "",
+            "available": False,
+            "availability_reason": "AI configuration could not be loaded",
+        }
+
     def post_result(self, scan_id: str, state: str, **kwargs: Any) -> bool:
         body = {"state": state, **kwargs}
         raw = json.dumps(body, separators=(",", ":")).encode()
@@ -114,6 +133,8 @@ def process_one(api: APIClient, env: dict[str, Any]) -> None:
         return
 
     payload = job.get("payload") or {}
+    if kind == "ai":
+        payload = {**payload, "_ai_config": api.get_ai_config()}
     try:
         out = handler(payload, api.http)
     except Exception as e:                              # noqa: BLE001 — never crash the worker

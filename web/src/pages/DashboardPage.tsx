@@ -35,6 +35,14 @@ interface StatsResponse {
   tagged: number;
   failed: number;
   blocked_total: number;
+  feedback: ChartRow[];
+  false_negatives: number;
+  false_positives: number;
+  feedback_coverage: number;
+  dnsbl_blocked: number;
+  ai_jobs: number;
+  ai_unavailable: number;
+  deep_analysis: ChartRow[];
 }
 
 export function DashboardPage() {
@@ -72,6 +80,13 @@ export function DashboardPage() {
         <StatCard label="Inbound" to={drilldownHref({ direction: "inbound" })} count={data?.inbound} isLoading={isLoading} tone="accent" total={data?.total} hint="of processed mail" />
         <StatCard label="Outbound" to={drilldownHref({ direction: "outbound" })} count={data?.outbound} isLoading={isLoading} tone="accent" total={data?.total} hint="of processed mail" />
         <StatCard label="Confirmed phishing" to="/reports" count={data?.phishing_total} isLoading={isLoading} tone="danger" total={data?.total} hint="user or scanner confirmed" />
+      </div>
+
+      <div className="grid gap-4 grid-cols-1 md:grid-cols-2 xl:grid-cols-4 mt-4">
+        <StatCard label="Reported spam delivered" to="/mailbox?verdict=spam" count={data?.false_negatives} isLoading={isLoading} tone="danger" hint="confirmed false negatives" />
+        <StatCard label="Wanted mail flagged" to="/mailbox?verdict=not_spam" count={data?.false_positives} isLoading={isLoading} tone="warning" hint="confirmed false positives" />
+        <StatCard label="Messages reviewed" to="/mailbox" count={data?.feedback_coverage} isLoading={isLoading} tone="accent" hint="learning coverage" />
+        <StatCard label="Reputation checks blocked" to={drilldownHref()} count={data?.dnsbl_blocked} isLoading={isLoading} tone="warning" hint="resolver/provider limitations" />
       </div>
 
       <div className="mt-4">

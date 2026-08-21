@@ -12,6 +12,8 @@ import (
 	"github.com/arphost/sentinelmail-gateway/internal/challenge"
 	"github.com/arphost/sentinelmail-gateway/internal/classifier"
 	"github.com/arphost/sentinelmail-gateway/internal/policies"
+	"github.com/arphost/sentinelmail-gateway/internal/settings"
+	"github.com/arphost/sentinelmail-gateway/internal/threatfeed"
 )
 
 func TestVerifySigRequiresHMACSHA256(t *testing.T) {
@@ -335,6 +337,66 @@ func TestCommonScamDetectionQuarantinesHealthMiracleSpam(t *testing.T) {
 	}
 }
 
+func TestCommonScamDetectionQuarantinesAuthenticatedHealthLeadGenerationSpam(t *testing.T) {
+	tests := []struct {
+		name    string
+		subject string
+		body    string
+	}{
+		{name: "pancreas reset", subject: "Could your pancreas need a reset?", body: "Scientists describe a blood sugar reset and claim the real cause starts in the pancreas."},
+		{name: "brain health video", subject: "Explore practical brain health tips", body: "A memory discovery could change your routine. Watch this video to learn more."},
+		{name: "sleep wake-up breakthrough", subject: "What if your sleep problem starts with 3AM wake-ups?", body: "A doctor reveals a breakthrough. Click here to watch the video presentation."},
+		{name: "nail fungus curiosity", subject: "What happens after you rub your nail this way?", body: "This nail fungus cure is presented as a simple discovery. Find out more."},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ev := &Event{
+				From:     "newsletter@live.example.test",
+				To:       []string{"recipient@example.test"},
+				Subject:  tt.subject,
+				BodyText: tt.body,
+				Symbols: map[string]any{
+					"R_SPF_ALLOW":        true,
+					"R_DKIM_ALLOW":       true,
+					"DMARC_POLICY_ALLOW": true,
+				},
+			}
+			got, reason := applyCommonScamDetection("delivered", "", ev)
+			if got != "quarantined" {
+				t.Fatalf("disposition = %q, want quarantined", got)
+			}
+			if reason != "detected health lead-generation spam" {
+				t.Fatalf("reason = %q, want detected health lead-generation spam", reason)
+			}
+			if threat := classifyThreat(ev); threat != "SPAM" {
+				t.Fatalf("threat = %q, want SPAM", threat)
+			}
+		})
+	}
+}
+
+func TestCommonScamDetectionAllowsAuthenticatedHealthEducation(t *testing.T) {
+	ev := &Event{
+		From:     "education@hospital.example.test",
+		To:       []string{"recipient@example.test"},
+		Subject:  "Practical brain health tips",
+		BodyText: "Maintain a regular sleep schedule, exercise, and discuss memory concerns with your clinician.",
+		Symbols: map[string]any{
+			"R_SPF_ALLOW":        true,
+			"R_DKIM_ALLOW":       true,
+			"DMARC_POLICY_ALLOW": true,
+		},
+	}
+	got, reason := applyCommonScamDetection("delivered", "", ev)
+	if got != "delivered" || reason != "" {
+		t.Fatalf("authenticated health education changed to %q/%q, want delivered/empty", got, reason)
+	}
+	if threat := classifyThreat(ev); threat != "" {
+		t.Fatalf("authenticated health education threat = %q, want empty", threat)
+	}
+}
+
 func TestCommonScamDetectionQuarantinesHomeServicesLeadGenSpam(t *testing.T) {
 	ev := &Event{
 		From:    "Sanborsn@info.fitlifepaths.com",
@@ -380,6 +442,14 @@ func TestCommonScamCategoryToggleOnlyDisablesThatCategory(t *testing.T) {
 	got, reason := applyCommonScamDetectionWithPolicy("delivered", "", pol, health)
 	if got != "delivered" || reason != "" {
 		t.Fatalf("disabled health category changed to %q/%q, want delivered/empty", got, reason)
+	}
+	leadGen := &Event{
+		Subject:  "What if your sleep problem starts with 3AM wake-ups?",
+		BodyText: "A doctor reveals a breakthrough. Click here to watch the video presentation.",
+	}
+	got, reason = applyCommonScamDetectionWithPolicy("delivered", "", pol, leadGen)
+	if got != "delivered" || reason != "" {
+		t.Fatalf("disabled health lead-generation category changed to %q/%q, want delivered/empty", got, reason)
 	}
 
 	home := &Event{Subject: "Is your septic system working properly?"}
@@ -786,31 +856,30 @@ func TestAuthEnforcementQuarantinesDMARCRejectPolicy(t *testing.T) {
 	}
 }
 
-func TestRejectThresholdQuarantinesForReview(t *testing.T) {
+func TestRejectThresholdRejectsRegardlessOfQuarantineAction(t *testing.T) {
 	got, reason := decide(&policies.Policy{SpamThreshold: 5, QuarantineThreshold: 10, RejectThreshold: 15}, &Event{Score: 20})
-	if got != "quarantined" {
-		t.Fatalf("disposition = %q, want quarantined", got)
+	if got != "rejected" {
+		t.Fatalf("disposition = %q, want rejected", got)
 	}
 	if reason != "score >= reject_threshold" {
 		t.Fatalf("reason = %q", reason)
 	}
 }
 
-func TestQuarantineActionTagDeliversOverThresholdAsTagged(t *testing.T) {
+func TestQuarantineActionTagOnlyAppliesBelowRejectThreshold(t *testing.T) {
 	pol := &policies.Policy{
 		SpamThreshold:       5,
 		QuarantineThreshold: 10,
 		RejectThreshold:     15,
 		QuarantineAction:    "tag",
 	}
-	for _, score := range []float64{11, 20} {
-		got, reason := decide(pol, &Event{Score: score})
-		if got != "tagged" {
-			t.Fatalf("score %v disposition = %q, want tagged", score, got)
-		}
-		if reason == "" {
-			t.Fatalf("score %v reason is empty", score)
-		}
+	got, reason := decide(pol, &Event{Score: 11})
+	if got != "tagged" || reason != "score >= quarantine_threshold" {
+		t.Fatalf("score 11 disposition = %q/%q, want tagged/quarantine threshold", got, reason)
+	}
+	got, reason = decide(pol, &Event{Score: 20})
+	if got != "rejected" || reason != "score >= reject_threshold" {
+		t.Fatalf("score 20 disposition = %q/%q, want rejected/reject threshold", got, reason)
 	}
 }
 
@@ -827,6 +896,59 @@ func TestQuarantineActionDeliverAllowsOverThresholdDelivery(t *testing.T) {
 	}
 	if reason != "score >= quarantine_threshold" {
 		t.Fatalf("reason = %q", reason)
+	}
+}
+
+func TestDeepAnalysisEligibleRequiresExplicitSafeConfiguration(t *testing.T) {
+	ev := &Event{Direction: "inbound", Score: 6, To: []string{"user@example.test"}}
+	config := settings.DeepAnalysisConfig{Enabled: true, MinScore: 4, TimeoutMinutes: 15}
+	ai := settings.AIConfig{Mode: "suspicious", Available: true}
+	if !deepAnalysisEligible("tagged", ev, config, ai) {
+		t.Fatal("eligible tagged message was not held")
+	}
+	for name, eligible := range map[string]bool{
+		"disabled hold":   deepAnalysisEligible("tagged", ev, settings.DeepAnalysisConfig{Enabled: false, MinScore: 4}, ai),
+		"disabled ai":     deepAnalysisEligible("tagged", ev, config, settings.AIConfig{Mode: "disabled", Available: true}),
+		"missing key":     deepAnalysisEligible("tagged", ev, config, settings.AIConfig{Mode: "suspicious", Available: false}),
+		"delivered":       deepAnalysisEligible("delivered", ev, config, ai),
+		"below score":     deepAnalysisEligible("tagged", &Event{Direction: "inbound", Score: 3.9}, config, ai),
+		"outbound":        deepAnalysisEligible("tagged", &Event{Direction: "outbound", Score: 6}, config, ai),
+		"multi recipient": deepAnalysisEligible("tagged", &Event{Direction: "inbound", Score: 6, To: []string{"one@example.test", "two@example.test"}}, config, ai),
+	} {
+		if eligible {
+			t.Fatalf("%s unexpectedly eligible", name)
+		}
+	}
+}
+
+func TestThreatCandidatesExtractTypedSignalsWithoutUnboundedFanout(t *testing.T) {
+	ev := &Event{
+		ClientIP: "192.0.2.10",
+		From:     "offers@campaign.example",
+		URLs: []string{
+			"https://landing.example/offer",
+			"javascript:alert(1)",
+			"https://landing.example/second",
+			"https://another.example/path",
+			"https://third.example/path",
+			"https://fourth.example/path",
+		},
+	}
+	got := threatCandidates(ev)
+	if len(got) > 8 {
+		t.Fatalf("candidate count = %d, want <= 8", len(got))
+	}
+	want := map[threatfeed.Kind]bool{threatfeed.KindIP: false, threatfeed.KindDomain: false, threatfeed.KindURL: false}
+	for _, candidate := range got {
+		want[candidate.kind] = true
+		if strings.HasPrefix(candidate.value, "javascript:") {
+			t.Fatal("unsafe URL scheme was accepted")
+		}
+	}
+	for kind, found := range want {
+		if !found {
+			t.Fatalf("missing %s candidate", kind)
+		}
 	}
 }
 
@@ -883,10 +1005,48 @@ func TestSenderListActionIgnoresBlockWhenBlacklistDisabled(t *testing.T) {
 	}
 }
 
-func TestSenderListActionAllowsScoreBasedQuarantine(t *testing.T) {
+func TestEffectiveSenderListAction(t *testing.T) {
+	tests := []struct {
+		name             string
+		action           string
+		blacklistEnabled bool
+		want             string
+	}{
+		{name: "allow", action: "allow", blacklistEnabled: true, want: "allow"},
+		{name: "enabled block", action: "block", blacklistEnabled: true, want: "block"},
+		{name: "disabled block", action: "block", blacklistEnabled: false, want: ""},
+		{name: "none", action: "", blacklistEnabled: true, want: ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := effectiveSenderListAction(tt.action, tt.blacklistEnabled); got != tt.want {
+				t.Fatalf("effectiveSenderListAction() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestRecordSenderListSymbol(t *testing.T) {
+	ev := &Event{}
+	recordSenderListSymbol(ev, "block")
+	symbol, ok := ev.Symbols["SMG_SENDER_BLACKLIST"].(map[string]any)
+	if !ok {
+		t.Fatalf("block symbol missing or wrong type: %#v", ev.Symbols)
+	}
+	if symbol["score"] != 20.0 || symbol["group"] != "sentinelmail" {
+		t.Fatalf("unexpected block symbol: %#v", symbol)
+	}
+
+	recordSenderListSymbol(ev, "allow")
+	if _, ok := ev.Symbols["SMG_SENDER_ALLOWLIST"]; !ok {
+		t.Fatalf("allow symbol missing: %#v", ev.Symbols)
+	}
+}
+
+func TestSenderListActionDoesNotAllowQuarantineThreshold(t *testing.T) {
 	got, reason := applySenderListAction("quarantined", "score >= quarantine_threshold", "allow", true)
-	if got != "delivered" || reason != "sender matched allowlist" {
-		t.Fatalf("allowlist changed to %q/%q, want delivered/allowlist", got, reason)
+	if got != "quarantined" || reason != "score >= quarantine_threshold" {
+		t.Fatalf("allowlist changed to %q/%q, want quarantined/threshold", got, reason)
 	}
 }
 
@@ -897,10 +1057,17 @@ func TestSenderListActionDoesNotAllowHardQuarantine(t *testing.T) {
 	}
 }
 
-func TestSenderListActionAllowsReputationQuarantine(t *testing.T) {
+func TestSenderListActionDoesNotAllowReputationQuarantine(t *testing.T) {
 	got, reason := applySenderListAction("quarantined", "reputation blocklist hit", "allow", true)
-	if got != "delivered" || reason != "sender matched allowlist" {
-		t.Fatalf("allowlist changed reputation quarantine to %q/%q, want delivered/allowlist", got, reason)
+	if got != "quarantined" || reason != "reputation blocklist hit" {
+		t.Fatalf("allowlist changed reputation quarantine to %q/%q", got, reason)
+	}
+}
+
+func TestSenderListActionDoesNotAllowCachedThreatHit(t *testing.T) {
+	got, reason := applySenderListAction("quarantined", "cached threat intelligence hit: urlhaus", "allow", true)
+	if got != "quarantined" || reason != "cached threat intelligence hit: urlhaus" {
+		t.Fatalf("allowlist changed cached threat quarantine to %q/%q", got, reason)
 	}
 }
 
@@ -908,6 +1075,18 @@ func TestSenderListActionAllowsPhishingSignalTag(t *testing.T) {
 	got, reason := applySenderListAction("tagged", "phishing signal hit", "allow", true)
 	if got != "delivered" || reason != "sender matched allowlist" {
 		t.Fatalf("allowlist changed phishing tag to %q/%q, want delivered/allowlist", got, reason)
+	}
+}
+
+func TestSenderListActionCannotOverrideLearnedThreatVerdict(t *testing.T) {
+	for _, verdict := range []string{"spam", "phishing", "malware"} {
+		t.Run(verdict, func(t *testing.T) {
+			reason := "user classified similar mail as " + verdict
+			gotDisposition, gotReason := applySenderListAction("quarantined", reason, "allow", true)
+			if gotDisposition != "quarantined" || gotReason != reason {
+				t.Fatalf("applySenderListAction() = %q, %q; want quarantined, %q", gotDisposition, gotReason, reason)
+			}
+		})
 	}
 }
 

@@ -5,7 +5,6 @@ package phishingreports
 import (
 	"context"
 	"encoding/json"
-	"net/url"
 	"strings"
 
 	"github.com/google/uuid"
@@ -22,7 +21,7 @@ func RecordFromScan(ctx context.Context, db *pgxpool.Pool, scanJobID uuid.UUID, 
 	if !json.Valid(evidence) || len(evidence) == 0 {
 		evidence = []byte(`{}`)
 	}
-	if !reportableScanVerdict(verdict, evidence) {
+	if !reportableScanVerdict(verdict) {
 		return nil
 	}
 	tx, err := db.Begin(ctx)
@@ -166,6 +165,17 @@ func quarantineScannerHit(ctx context.Context, db execer, scanJobID uuid.UUID, v
 	if err != nil {
 		return nil, err
 	}
+	_, err = db.Exec(ctx, `
+		UPDATE quarantine_entries qe
+		   SET threat_class = $2
+		  FROM scan_jobs sj
+		 WHERE sj.id = $1
+		   AND qe.mail_log_id = sj.mail_log_id
+		   AND qe.state = 'held'
+	`, scanJobID, threatClass)
+	if err != nil {
+		return nil, err
+	}
 	return &mailLogID, nil
 }
 
@@ -173,8 +183,6 @@ func scannerDetectionReason(verdict string) string {
 	switch verdict {
 	case "malware":
 		return "scanner verified malware"
-	case "suspicious":
-		return "scanner detected suspicious phishing indicators"
 	default:
 		return "scanner verified phishing"
 	}
@@ -263,55 +271,13 @@ func RecordFromQuarantine(ctx context.Context, db *pgxpool.Pool, quarantineEntry
 	return err
 }
 
-func reportableScanVerdict(verdict string, evidence []byte) bool {
+func reportableScanVerdict(verdict string) bool {
 	switch verdict {
 	case "phishing", "malicious", "malware":
 		return true
-	case "suspicious":
-		return suspiciousScanIndicatesPhishing(evidence)
 	default:
 		return false
 	}
-}
-
-func suspiciousScanIndicatesPhishing(evidence []byte) bool {
-	var result struct {
-		FinalURL string   `json:"final_url"`
-		Reasons  []string `json:"reasons"`
-		FeedHits []string `json:"feed_hits"`
-	}
-	if err := json.Unmarshal(evidence, &result); err != nil {
-		return false
-	}
-	if len(result.FeedHits) > 0 {
-		return true
-	}
-	u, err := url.Parse(result.FinalURL)
-	if err != nil || u.Hostname() == "" {
-		return false
-	}
-	host := strings.ToLower(u.Hostname())
-	path := strings.ToLower(u.EscapedPath())
-	query := strings.ToLower(u.RawQuery)
-	for _, reason := range result.Reasons {
-		reason = strings.ToLower(reason)
-		if strings.Contains(reason, "form posts to different domain") || strings.Contains(reason, "urlhaus") {
-			return true
-		}
-		if strings.Contains(reason, "password input") && phishingURLIntent(host, path, query) {
-			return true
-		}
-	}
-	return phishingURLIntent(host, path, query)
-}
-
-func phishingURLIntent(host, path, query string) bool {
-	for _, token := range []string{"login", "signin", "sign-in", "verify", "account", "password", "secure", "review"} {
-		if strings.Contains(host, token+".") || strings.Contains(path, token) || strings.Contains(query, token) {
-			return true
-		}
-	}
-	return false
 }
 
 func reportableUserVerdict(verdict string) bool {

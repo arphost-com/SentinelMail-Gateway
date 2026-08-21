@@ -44,6 +44,7 @@ Inbound to the host's public IP, from the internet:
 
 Outbound from the host:
 - Port 25 outbound to the internet — required so the gateway can deliver scanned mail to downstream MX servers. Many ISPs / cloud providers block this by default. Test it later in Step 11.
+- UDP and TCP port 53 outbound — required for SentinelMail's private Unbound resolver to perform full recursion. Do not force these queries through a shared/public DNS forwarder; DNS reputation providers can refuse shared query sources even while ordinary DNS continues to work.
 
 If the host sits behind a NAT/firewall instead of being directly on the internet, see [Scenario B](#scenario-b--behind-a-corporate-firewall) further down before you continue.
 
@@ -247,22 +248,11 @@ In the UI: **Sidebar → Mail logs** — you should see the message appear withi
 
 ### Step 13 — turn on AI scoring (optional)
 
-Without an Anthropic API key, the AI scan handler falls back to a keyword heuristic — works, but much less accurate. To turn on real Claude scoring:
-
-1. Get an API key at https://console.anthropic.com/
-2. Edit `.env`:
-   ```bash
-   nano ~/sentinelmail-gateway/deploy/docker/.env
-   ```
-3. Set:
-   ```
-   ANTHROPIC_API_KEY=sk-ant-...
-   ```
-4. Restart the worker:
-   ```bash
-   cd ~/sentinelmail-gateway/deploy/docker
-   docker compose up -d worker
-   ```
+Without the selected provider's API key, AI scans report `unavailable`; the
+keyword heuristic remains supporting metadata. Sign in as a super administrator,
+open **Configuration → System settings → AI analysis**, choose the provider,
+optionally set a model, enter the matching API key, and save. The next AI scan
+uses it without a container restart. See [configure.md](configure.md#ai-scoring-provider).
 
 ### Step 14 — back up your .env file
 

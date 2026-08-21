@@ -10,7 +10,7 @@ interface SettingMeta {
   key: string;
   label: string;
   description: string;
-  kind: "string" | "int" | "bool" | "enum";
+  kind: "string" | "int" | "bool" | "enum" | "secret";
   options?: string[];
   group: string;
   min?: number;
@@ -21,6 +21,7 @@ interface Setting {
   key: string;
   value: unknown;
   inherited?: boolean;
+  configured?: boolean;
   updated_at: string;
 }
 
@@ -158,7 +159,12 @@ export function SchemaSettingsForm({ endpoint, queryKey, groupLabels }: Props) {
                   {inherited && !dirty[m.key] && (
                     <div className="mb-1 text-xs text-subtle">Using default</div>
                   )}
-                  <Control meta={m} value={form[m.key]} onChange={(v) => update(m.key, v)} />
+                  <Control
+                    meta={m}
+                    value={form[m.key]}
+                    configured={data.items.find((item) => item.key === m.key)?.configured}
+                    onChange={(v) => update(m.key, v)}
+                  />
                 </Field>
               </div>
             );
@@ -190,10 +196,12 @@ function slugify(value: string): string {
 function Control({
   meta,
   value,
+  configured,
   onChange,
 }: {
   meta: SettingMeta;
   value: unknown;
+  configured?: boolean;
   onChange: (v: unknown) => void;
 }) {
   switch (meta.kind) {
@@ -223,6 +231,26 @@ function Control({
         >
           {meta.options?.map((o) => <option key={o} value={o}>{o}</option>)}
         </select>
+      );
+    case "secret":
+      return (
+        <div className="space-y-2">
+          <Input
+            type="password"
+            autoComplete="new-password"
+            value={typeof value === "string" ? value : ""}
+            placeholder={configured ? "Stored securely - enter a replacement" : "Enter API key"}
+            onChange={(e) => onChange(e.target.value)}
+          />
+          <div className="flex items-center justify-between gap-2 text-xs text-subtle">
+            <span>{configured ? "A key is configured; its value is never returned." : "No key configured."}</span>
+            {configured && (
+              <Button type="button" size="sm" variant="secondary" onClick={() => onChange("")}>
+                Clear stored key
+              </Button>
+            )}
+          </div>
+        </div>
       );
     case "string":
     default:

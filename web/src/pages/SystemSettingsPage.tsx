@@ -9,11 +9,11 @@ const GROUP_LABELS = {
   mail: "Mail plane",
   retention: "Retention",
   quarantine: "Quarantine",
+  ai: "AI analysis",
+  threat_intel: "Threat intelligence",
   tls: "TLS / HTTPS",
-  link_rewrite: "Link rewriting",
-  sso: "SSO",
   billing: "Billing hooks",
-  cluster: "Multi-node clustering",
+  cluster: "Gateway node",
 };
 
 /**
@@ -62,7 +62,7 @@ export function SystemSettingsPage() {
         <CardHeader className="flex flex-col gap-1 md:flex-row md:items-center md:justify-between">
           <div>
             <CardTitle>Global configuration</CardTitle>
-            <p className="text-xs text-subtle">Branding, mail plane, retention, quarantine, TLS, billing, and cluster behavior.</p>
+            <p className="text-xs text-subtle">Working controls for branding, mail plane, AI providers, retention, quarantine, TLS, billing webhooks, and node identity.</p>
           </div>
         </CardHeader>
         <CardBody>

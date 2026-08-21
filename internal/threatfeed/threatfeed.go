@@ -8,9 +8,12 @@ package threatfeed
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 
@@ -154,10 +157,11 @@ func (r *Registry) intervalFor(ctx context.Context, f Feed) (time.Duration, bool
 // Errors from a single feed are downgraded to misses (the contract: don't
 // block mail on threat-feed outage).
 func (r *Registry) Lookup(ctx context.Context, kind Kind, value string) (Result, error) {
+	value = normalizeLookupValue(kind, value)
 	if value == "" {
 		return Result{}, errors.New("empty value")
 	}
-	cacheKey := fmt.Sprintf("smg:tf:%s:%s", kind, value)
+	cacheKey := threatCacheKey(kind, value)
 	if hit, ok := r.cacheLookup(ctx, cacheKey); ok {
 		return hit, nil
 	}
@@ -172,18 +176,47 @@ func (r *Registry) Lookup(ctx context.Context, kind Kind, value string) (Result,
 		if err != nil {
 			r.log.LogAttrs(ctx, slog.LevelWarn, "threatfeed.lookup_error",
 				slog.String("feed", f.Name()),
-				slog.String("value", value),
+				slog.String("kind", string(kind)),
 				slog.String("err", err.Error()))
 			continue
 		}
 		if res.Hit {
-			r.cacheStore(ctx, cacheKey, res, 10*time.Minute)
+			r.cacheStore(ctx, cacheKey, res, 6*time.Hour)
 			return res, nil
 		}
 	}
 	miss := Result{Hit: false}
-	r.cacheStore(ctx, cacheKey, miss, 60*time.Second)
+	r.cacheStore(ctx, cacheKey, miss, 15*time.Minute)
 	return miss, nil
+}
+
+// LookupCached is safe in the SMTP decision path: it only reads local Redis
+// state and never invokes a provider or DNS resolver.
+func (r *Registry) LookupCached(ctx context.Context, kind Kind, value string) (Result, bool) {
+	value = normalizeLookupValue(kind, value)
+	if value == "" {
+		return Result{}, false
+	}
+	return r.cacheLookup(ctx, threatCacheKey(kind, value))
+}
+
+// Warm resolves an observed value outside the SMTP decision path and stores
+// the result for subsequent messages in the same campaign.
+func (r *Registry) Warm(ctx context.Context, kind Kind, value string) {
+	_, _ = r.Lookup(ctx, kind, value)
+}
+
+func normalizeLookupValue(kind Kind, value string) string {
+	value = strings.TrimSpace(value)
+	if kind == KindDomain {
+		return strings.TrimSuffix(strings.ToLower(value), ".")
+	}
+	return value
+}
+
+func threatCacheKey(kind Kind, value string) string {
+	digest := sha256.Sum256([]byte(string(kind) + "\x00" + value))
+	return fmt.Sprintf("smg:tf:%s:%s", kind, hex.EncodeToString(digest[:]))
 }
 
 func (r *Registry) cacheLookup(ctx context.Context, key string) (Result, bool) {
@@ -197,6 +230,9 @@ func (r *Registry) cacheLookup(ctx context.Context, key string) (Result, bool) {
 	// Tiny encoding: "hit:<source>" or "miss"
 	if v == "miss" {
 		return Result{Hit: false}, true
+	}
+	if !strings.HasPrefix(v, "hit:") {
+		return Result{}, false
 	}
 	return Result{Hit: true, Source: v[len("hit:"):]}, true
 }

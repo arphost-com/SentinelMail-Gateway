@@ -92,7 +92,7 @@ The same plain-English guidance is available inside the app under **Docs** so cu
 **MVP 2 — shipped**
 - v1 **QR phishing**: pyzbar decode + URLhaus URL lookup
 - v2 **Browser sandbox**: headless Chromium via Playwright in a dedicated worker; screenshot + redirect + password-input + cross-origin-form heuristics
-- v3 **AI scoring**: Anthropic Claude (Haiku 4.5 default); missing-provider and provider-error states are reported explicitly as unavailable/inconclusive, with local heuristics retained only as supporting metadata
+- v3 **AI scoring**: selectable Anthropic Claude or OpenAI Responses API provider; missing-provider and provider-error states are reported explicitly as unavailable/inconclusive, with local heuristics retained only as supporting metadata
 - v4 **Outbound BEC**: recipient fan-out, distinct-domain count, off-hours, BEC-keyword heuristics
 - **Auto-trigger** from real mail: the Lua snippet is now baked into the rspamd image and auto-loads; every inbound message fans into the appropriate scan kinds with no operator action
 
@@ -123,6 +123,7 @@ The same plain-English guidance is available inside the app under **Docs** so cu
         ┌──────────────────┐   ┌────────────┐
         │  Rspamd          │──►│  ClamAV    │
         │  ├─ SPF/DKIM/DMARC│   └────────────┘
+        │  └─ DNS reputation├──► Unbound full recursion
         │  ├─ RBLs (Spamhaus…) │
         │  └─ smg_ingest.lua  ─────────┐
         └──────────────────┘           │
@@ -165,12 +166,12 @@ The same plain-English guidance is available inside the app under **Docs** so cu
 
 | Layer       | Tech                                                              |
 | ---         | ---                                                               |
-| Backend     | Go 1.25, chi router, pgx/v5, go-redis/v9, goose migrations        |
+| Backend     | Go 1.26.6, chi router, pgx/v5, go-redis/v9, goose migrations      |
 | Frontend    | React 18 + TypeScript, Vite, Tailwind, React Router, React Query  |
 | Database    | PostgreSQL 16                                                     |
 | Cache/queue | Redis 7                                                           |
 | Mail plane  | Postfix 3.x, Rspamd 4.x, ClamAV 1.4                               |
-| Workers     | Python 3.12, pyzbar, Playwright/Chromium, Anthropic SDK           |
+| Workers     | Python 3.12, pyzbar, Playwright/Chromium, Anthropic SDK, OpenAI Responses API |
 | MFA         | pquerna/otp (TOTP)                                                |
 | CI/CD       | GitLab CI on a shell runner registered on `docker02`              |
 
@@ -249,8 +250,7 @@ These must exist before the API can read DB-backed settings, so they stay in `.e
 | `SMG_ENV`                                        | `dev` → non-Secure cookies (plain HTTP); anything else → Secure |
 | `POSTGRES_PASSWORD`                              | Postgres user password                                     |
 | `RSPAMD_PASSWORD` / `RSPAMD_CONTROLLER_PASSWORD` | Rspamd web UI / controller auth                            |
-| `ANTHROPIC_API_KEY`                              | Optional — switches AI scoring from heuristic to Claude    |
-| `SMG_AI_MODEL`                                   | Optional — defaults to `claude-haiku-4-5-20251001`         |
+| `SMG_SETTINGS_ENCRYPTION_KEY`                    | One-time 32-byte deployment key for encrypted DB secrets    |
 | `POSTFIX_MYHOSTNAME` / `POSTFIX_MYNETWORKS`      | Postfix initial config (also configurable at runtime)      |
 | `SMG_SMTP_LISTEN_IP`                             | Bind IP for SMTP (set to docker02's `10.10.10.93` when a system MTA holds 127.0.0.1:25) |
 | `SMG_SYSTEM_FROM_ADDRESS`                        | Optional deployment-owned From address for abuse reports and system email; overrides the UI value on startup |
@@ -266,11 +266,20 @@ Editable from the UI without restart; lives in `system_settings`. Add a new key 
 | `mail.mynetworks`             | string | `127.0.0.0/8 10.0.0.0/8 172.16.0.0/12`       |
 | `mail.system_from_address`    | string | empty; falls back to the organization support address |
 | `message.retention_days`      | int    | `90`                                         |
-| `quarantine.default_action`   | enum   | `tag` (deliver/tag/quarantine/reject)        |
+| `quarantine.default_action`   | enum   | `quarantine` (deliver/tag/quarantine/reject) |
+| `ai.mode`                     | enum   | `disabled` (disabled/suspicious/all)         |
+| `ai.provider`                 | enum   | `anthropic` or `openai`                      |
+| `ai.model`                    | string | blank uses the selected provider default     |
+| `ai.anthropic_api_key`        | secret | encrypted Anthropic credential               |
+| `ai.openai_api_key`           | secret | encrypted OpenAI credential                  |
+| `deep_analysis.enabled`       | bool   | hold tagged borderline mail before delivery |
+| `deep_analysis.min_score`     | int    | minimum score for the bounded async hold     |
+| `deep_analysis.timeout_minutes` | int  | timeout before manual review is required     |
+| `threat_intel.cached_enforcement` | bool | enforce local cached feed hits             |
 
 ### Threat feeds (Settings → Threat feeds)
 
-Per-feed enable, refresh interval, source URL, API key, and live status. Seeded: Spamhaus ZEN/DBL, SpamCop, URLhaus, OpenPhish (disabled by default — needs key). **Contract:** per-feed failure is a miss, never an error — mail flow never blocks on feed outage.
+Per-feed enable, refresh interval, source URL, API key, and live status. Working providers are Spamhaus ZEN, Spamhaus DBL, SpamCop, and URLhaus. OpenPhish and PhishTank are hidden until a functional integration exists. Cached hits are enforced locally; new external lookups warm the cache asynchronously for repeated campaign traffic. **Contract:** per-feed failure is a miss, never an error — mail flow never blocks on feed outage.
 
 ---
 
@@ -429,14 +438,10 @@ After the first pipeline succeeds and the stack is up:
 2. **Enable MFA on the admin.** Settings → Account → Enable two-factor.
 3. **Register your first managed domain.** Sidebar → Domains → `+ New domain`. Without this, inbound mail for the domain is rejected as "unknown recipient domain" by the ingest.
 4. **Set the automated sender.** System Settings → Mail → Automated sender address. Hosted operators should use an address in their own SPF/DKIM-authenticated domain; customer support addresses remain reply/contact addresses and do not need SentinelMail added to customer SPF.
-5. **(Optional) Enable Claude AI scoring.** Drop `ANTHROPIC_API_KEY=sk-ant-...` into `/home/debian/sentinelmail-gateway/deploy/docker/.env` and restart the worker:
-   ```bash
-   sudo nano /home/debian/sentinelmail-gateway/deploy/docker/.env
-   sudo -u gitlab-runner docker compose --env-file /home/debian/sentinelmail-gateway/deploy/docker/.env -f /home/debian/sentinelmail-gateway/deploy/docker/docker-compose.yml restart worker
-   ```
+5. **(Optional) Enable AI scoring.** Open **Configuration → System settings → AI analysis**, choose `Suspicious` for cost-controlled analysis or `All` for every readable inbound message, select OpenAI or Anthropic, optionally set a model, enter that provider's API key, and save. `Disabled` is the zero-cost default and creates no AI jobs. The next eligible asynchronous scan uses the database-backed configuration; no container restart is required.
 6. **Point DNS at the gateway.** Set MX records for your domain to docker02 (or whichever host you deployed on), with the next-hop gateway you configured under Sidebar → Gateways.
 
-That's it. From here Rspamd auto-trigger fires on every message and the in-app **Docs** page (sidebar) explains day-to-day use.
+That's it. From here Rspamd scores every message, while optional deeper scans run according to their database-backed modes. The in-app **Docs** page (sidebar) explains day-to-day use.
 
 ---
 
@@ -473,9 +478,9 @@ Worker container isn't picking up. `docker compose logs worker / logs sandbox`. 
 No mail processed yet (no real mail flowing) **or** recipient domain isn't registered. Add the domain on the Domains page and re-send.
 
 ### AI scan shows `unavailable`
-`ANTHROPIC_API_KEY` is not configured. The deterministic mail checks remain
-active, but the UI and system health deliberately do not represent the local
-heuristic metadata as a completed AI scan. See Operator setup step 5 above.
+The selected provider's database-backed key is not configured, cannot be
+decrypted, or its request failed. Review **Configuration → System settings → AI
+analysis**. The scan result records provider, model, and a secret-safe reason.
 
 ### Threat feed shows `error` in Settings
 See `last_refresh_err`. Usually a network blocker (Spamhaus rate-limit, no outbound HTTPS). Mail flow continues either way.

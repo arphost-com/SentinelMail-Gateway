@@ -174,7 +174,11 @@ swaks --to test@yourdomain.com --from sender@spammy.example.com \
       --body "Click here to reset your password immediately"
 ```
 
-The AI handler will flag the keywords, the policy will react, you'll see the result in **Mail logs** within ~5s.
+When AI mode is `suspicious` or `all` and a provider key is configured, the AI
+handler scores eligible mail asynchronously. Disabled mode makes no provider
+calls. A borderline message is withheld before delivery only when the separate
+deep-analysis hold is enabled; clean results are released and threats remain in
+quarantine.
 
 ---
 

@@ -99,7 +99,7 @@ Postfix's actual delivery to the downstream MX happens after Rspamd accepts; the
 
 | | |
 | --- | --- |
-| Go | 1.25 |
+| Go | 1.26.6 |
 | chi | v5.2 |
 | pgx | v5.9 |
 | go-redis | v9.19 |

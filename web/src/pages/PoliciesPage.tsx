@@ -100,7 +100,7 @@ const SCAM_CATEGORIES: Array<{ key: keyof Form; label: string; help: string }> =
   { key: "common_scam_payment_support_enabled", label: "Payment support scams", help: "Fake charges or transactions that push the user to call support." },
   { key: "common_scam_tax_document_enabled", label: "Tax document phishing", help: "Tax form, refund, or document-ready lures." },
   { key: "common_scam_malware_lure_enabled", label: "Malware lures", help: "Executable, script, macro, or risky attachment wording." },
-  { key: "common_scam_health_miracle_enabled", label: "Health miracle spam", help: "Miracle discovery, pain, weight, hearing, vision, or chronic-health spam." },
+  { key: "common_scam_health_miracle_enabled", label: "Health lead-generation spam", help: "Curiosity-driven health claims, miracle discoveries, pain, weight, hearing, vision, or chronic-health offers." },
   { key: "common_scam_home_services_enabled", label: "Home-services lead gen", help: "Septic, roof, windows, HVAC, solar, and similar home-service solicitation spam." },
 ];
 const PRESETS = [
