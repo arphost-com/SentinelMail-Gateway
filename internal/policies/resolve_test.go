@@ -173,6 +173,15 @@ func TestCampaignSettings(t *testing.T) {
 	}
 }
 
+func TestChallengeResponseVerifiedSourceDefaultsOn(t *testing.T) {
+	if !(&Policy{}).ChallengeResponseRequireVerifiedSource() {
+		t.Fatal("verified source must default on")
+	}
+	if (&Policy{Settings: map[string]any{"challenge_response_require_verified_source": false}}).ChallengeResponseRequireVerifiedSource() {
+		t.Fatal("explicit false was ignored")
+	}
+}
+
 // TestResolverCTEHasNoAmbiguousColumns guards against a regression of the
 // "column reference 'id' is ambiguous" Postgres error we hit when the
 // recursive CTE used a column literally named `id`, which collided with

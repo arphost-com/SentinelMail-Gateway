@@ -105,3 +105,30 @@ func TestListSQLPreservesLikePatterns(t *testing.T) {
 		}
 	}
 }
+
+func TestNormalizeRule(t *testing.T) {
+	tests := []struct{ kind, input, want string }{
+		{"email", "Sender <User@Example.com>", "user@example.com"},
+		{"domain", "@Mail.Example.com", "*@mail.example.com"},
+		{"ip", "192.0.2.44", "192.0.2.44/32"},
+		{"ip", "2001:db8::4", "2001:db8::4/128"},
+		{"ip", "192.0.2.99/24", "192.0.2.0/24"},
+	}
+	for _, tt := range tests {
+		got, err := NormalizeRule(tt.kind, tt.input)
+		if err != nil {
+			t.Fatalf("NormalizeRule(%q, %q): %v", tt.kind, tt.input, err)
+		}
+		if got != tt.want {
+			t.Fatalf("NormalizeRule(%q, %q) = %q, want %q", tt.kind, tt.input, got, tt.want)
+		}
+	}
+}
+
+func TestNormalizeRuleRejectsInvalidValues(t *testing.T) {
+	for _, tt := range []struct{ kind, input string }{{"email", "example.com"}, {"domain", "https://example.com"}, {"ip", "not-an-ip"}} {
+		if got, err := NormalizeRule(tt.kind, tt.input); err == nil {
+			t.Fatalf("NormalizeRule(%q, %q) accepted %q", tt.kind, tt.input, got)
+		}
+	}
+}

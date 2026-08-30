@@ -23,6 +23,7 @@ var hardcodedDefault = Policy{
 		"source":                                           "hardcoded",
 		"sender_blacklist_enabled":                         true,
 		"challenge_response_enabled":                       false,
+		"challenge_response_require_verified_source":       true,
 		"brand_impersonation_enabled":                      true,
 		"brand_impersonation_display_name_enabled":         true,
 		"brand_impersonation_subject_enabled":              true,

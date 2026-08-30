@@ -29,6 +29,7 @@ type User struct {
 	MFAEnrolled            bool       `json:"mfa_enrolled"`
 	PhishingAlertFrequency string     `json:"phishing_alert_frequency"`
 	BulkCompletionNotify   string     `json:"bulk_completion_notification"`
+	ChallengeResponseMode  string     `json:"challenge_response_mode"`
 	LastLoginAt            *time.Time `json:"last_login_at,omitempty"`
 	CreatedAt              time.Time  `json:"created_at"`
 	UpdatedAt              time.Time  `json:"updated_at"`
@@ -36,11 +37,11 @@ type User struct {
 
 const cols = `id, organization_id, email, role::text, display_name,
               is_active, (mfa_enrolled_at IS NOT NULL) AS mfa_enrolled,
-              phishing_alert_frequency, bulk_completion_notification, last_login_at, created_at, updated_at`
+              phishing_alert_frequency, bulk_completion_notification, challenge_response_mode, last_login_at, created_at, updated_at`
 
 func scan(row pgx.Row, u *User) error {
 	return row.Scan(&u.ID, &u.OrganizationID, &u.Email, &u.Role, &u.DisplayName,
-		&u.IsActive, &u.MFAEnrolled, &u.PhishingAlertFrequency, &u.BulkCompletionNotify, &u.LastLoginAt, &u.CreatedAt, &u.UpdatedAt)
+		&u.IsActive, &u.MFAEnrolled, &u.PhishingAlertFrequency, &u.BulkCompletionNotify, &u.ChallengeResponseMode, &u.LastLoginAt, &u.CreatedAt, &u.UpdatedAt)
 }
 
 type Handler struct{ DB *pgxpool.Pool }
@@ -122,6 +123,7 @@ type writeReq struct {
 	Password               string     `json:"password,omitempty"`
 	PhishingAlertFrequency string     `json:"phishing_alert_frequency,omitempty"`
 	BulkCompletionNotify   string     `json:"bulk_completion_notification,omitempty"`
+	ChallengeResponseMode  string     `json:"challenge_response_mode,omitempty"`
 }
 
 var validRoles = map[string]bool{
@@ -176,10 +178,10 @@ func (h *Handler) create(w http.ResponseWriter, r *http.Request) {
 
 	var u User
 	err = scan(h.DB.QueryRow(r.Context(), `
-		INSERT INTO users (organization_id, email, password_hash, role, display_name, is_active)
-		VALUES ($1, $2, $3, $4::user_role, $5, COALESCE($6, true))
+		INSERT INTO users (organization_id, email, password_hash, role, display_name, is_active, challenge_response_mode)
+		VALUES ($1, $2, $3, $4::user_role, $5, COALESCE($6, true), COALESCE(NULLIF($7,''), 'inherit'))
 		RETURNING `+cols,
-		orgID, req.Email, hash, req.Role, req.DisplayName, req.IsActive), &u)
+		orgID, req.Email, hash, req.Role, req.DisplayName, req.IsActive, req.ChallengeResponseMode), &u)
 	if err != nil {
 		if strings.Contains(err.Error(), "duplicate") {
 			httpx.WriteError(w, http.StatusConflict, "user already exists for that organization")
@@ -261,6 +263,10 @@ func (h *Handler) update(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteError(w, http.StatusBadRequest, "invalid bulk completion notification preference")
 		return
 	}
+	if req.ChallengeResponseMode != "" && !validChallengeResponseMode(req.ChallengeResponseMode) {
+		httpx.WriteError(w, http.StatusBadRequest, "invalid challenge-response mode")
+		return
+	}
 	if _, err := h.DB.Exec(r.Context(), `
 		UPDATE users SET
 		  email        = COALESCE(NULLIF($1,''), email),
@@ -269,9 +275,10 @@ func (h *Handler) update(w http.ResponseWriter, r *http.Request) {
 		  is_active    = COALESCE($4, is_active),
 		  phishing_alert_frequency = COALESCE(NULLIF($5,''), phishing_alert_frequency),
 		  bulk_completion_notification = COALESCE(NULLIF($6,''), bulk_completion_notification),
+		  challenge_response_mode = COALESCE(NULLIF($7,''), challenge_response_mode),
 		  updated_at   = now()
-		WHERE id = $7
-	`, strings.ToLower(req.Email), req.Role, req.DisplayName, req.IsActive, req.PhishingAlertFrequency, req.BulkCompletionNotify, id); err != nil {
+		WHERE id = $8
+	`, strings.ToLower(req.Email), req.Role, req.DisplayName, req.IsActive, req.PhishingAlertFrequency, req.BulkCompletionNotify, req.ChallengeResponseMode, id); err != nil {
 		httpx.WriteError(w, http.StatusInternalServerError, "update failed: "+err.Error())
 		return
 	}
@@ -290,6 +297,15 @@ func validPhishingAlertFrequency(value string) bool {
 func validBulkCompletionNotification(value string) bool {
 	switch value {
 	case "email", "in_app", "both", "off":
+		return true
+	default:
+		return false
+	}
+}
+
+func validChallengeResponseMode(value string) bool {
+	switch value {
+	case "inherit", "enabled", "disabled":
 		return true
 	default:
 		return false

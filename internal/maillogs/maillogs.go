@@ -887,8 +887,8 @@ func (h *Handler) upsertOrgSenderBlock(ctx context.Context, orgID uuid.UUID, sen
 		return err
 	}
 	_, err := h.DB.Exec(ctx, `
-		INSERT INTO list_entries (organization_id, domain_id, user_id, scope, action, pattern, note)
-		VALUES ($1, NULL, NULL, 'org'::listentry_scope, 'block'::listentry_action, $2, $3)
+		INSERT INTO list_entries (organization_id, domain_id, user_id, scope, action, kind, pattern, note)
+		VALUES ($1, NULL, NULL, 'org'::listentry_scope, 'block'::listentry_action, 'email'::listentry_kind, $2, $3)
 	`, orgID, sender, note)
 	return err
 }

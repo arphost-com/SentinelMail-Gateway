@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	stdmail "net/mail"
+	"net/netip"
 	"regexp"
 	"strings"
 	"time"
@@ -32,7 +33,9 @@ type Entry struct {
 	UserID         *uuid.UUID `json:"user_id,omitempty"`
 	Scope          string     `json:"scope"`
 	Action         string     `json:"action"`
+	Kind           string     `json:"kind"`
 	Pattern        string     `json:"pattern"`
+	Sender         string     `json:"sender"`
 	SenderDomain   string     `json:"sender_domain"`
 	Note           string     `json:"note,omitempty"`
 	BlockedCount   int        `json:"blocked_count"`
@@ -44,7 +47,7 @@ func entryCols(alias string) string {
 	if alias != "" {
 		prefix = alias + "."
 	}
-	return prefix + `id, ` + prefix + `organization_id, ` + prefix + `domain_id, ` + prefix + `user_id, ` + prefix + `scope::text, ` + prefix + `action::text,
+	return prefix + `id, ` + prefix + `organization_id, ` + prefix + `domain_id, ` + prefix + `user_id, ` + prefix + `scope::text, ` + prefix + `action::text, ` + prefix + `kind::text,
                    ` + prefix + `pattern, COALESCE(` + prefix + `note, ''), ` + blockedCountExpr(alias) + `, ` + prefix + `created_at`
 }
 
@@ -79,12 +82,14 @@ func blockedCountExpr(alias string) string {
 		          )
 		     )
 		   )
-		   AND (
+		   AND CASE WHEN ` + ref + `.kind = 'ip'::listentry_kind THEN
+		     ml.client_ip IS NOT NULL AND ml.client_ip <<= ` + ref + `.pattern::cidr
+		   ELSE (
 		     (lower(` + ref + `.pattern) LIKE '*@%' AND (` + fromDomain + ` = substring(lower(` + ref + `.pattern) from 3) OR ` + fromDomain + ` LIKE '%.' || substring(lower(` + ref + `.pattern) from 3)))
 		     OR (lower(` + ref + `.pattern) LIKE '@%' AND (` + fromDomain + ` = substring(lower(` + ref + `.pattern) from 2) OR ` + fromDomain + ` LIKE '%.' || substring(lower(` + ref + `.pattern) from 2)))
 		     OR (lower(` + ref + `.pattern) NOT LIKE '%@%' AND (` + fromDomain + ` = lower(` + ref + `.pattern) OR ` + fromDomain + ` LIKE '%.' || lower(` + ref + `.pattern)))
 		     OR (lower(` + ref + `.pattern) LIKE '%@%' AND lower(trim(COALESCE(ml.from_addr, ''))) = lower(` + ref + `.pattern))
-		   )
+		   ) END
 	), 0)::int`
 }
 
@@ -142,76 +147,107 @@ func UpsertUserDecision(ctx context.Context, db *pgxpool.Pool, orgID uuid.UUID, 
 		   AND domain_id IS NOT DISTINCT FROM $2
 		   AND user_id = $3
 		   AND scope = 'user'::listentry_scope
+		   AND kind = 'email'::listentry_kind
 		   AND lower(pattern) = lower($4)
 	`, orgID, domainID, userID, fromAddr); err != nil {
 		return err
 	}
 	_, err := db.Exec(ctx, `
-		INSERT INTO list_entries (organization_id, domain_id, user_id, scope, action, pattern, note)
-		VALUES ($1, $2, $3, 'user'::listentry_scope, $4::listentry_action, $5, $6)
+		INSERT INTO list_entries (organization_id, domain_id, user_id, scope, action, kind, pattern, note)
+		VALUES ($1, $2, $3, 'user'::listentry_scope, $4::listentry_action, 'email'::listentry_kind, $5, $6)
 	`, orgID, domainID, userID, action, fromAddr, note)
 	return err
 }
 
-func UpsertDomainDecision(ctx context.Context, db *pgxpool.Pool, orgID *uuid.UUID, domainID *uuid.UUID, userID *uuid.UUID, scope, senderDomain, action, note string) (bool, string, error) {
+func UpsertDecision(ctx context.Context, db *pgxpool.Pool, orgID, domainID, userID *uuid.UUID, scope, kind, value, action, note string) (string, error) {
 	scope = strings.ToLower(strings.TrimSpace(scope))
+	kind = strings.ToLower(strings.TrimSpace(kind))
 	action = strings.ToLower(strings.TrimSpace(action))
 	if scope != "system" && scope != "org" && scope != "domain" && scope != "user" {
-		return false, "", fmt.Errorf("scope must be system, org, domain, or user")
+		return "", fmt.Errorf("scope must be system, org, domain, or user")
+	}
+	if kind != "email" && kind != "domain" && kind != "ip" {
+		return "", fmt.Errorf("kind must be email, domain, or ip")
 	}
 	if action != "allow" && action != "block" {
-		return false, "", fmt.Errorf("action must be allow or block")
+		return "", fmt.Errorf("action must be allow or block")
+	}
+	if kind == "ip" && action != "block" {
+		return "", fmt.Errorf("IP rules are block-only")
 	}
 	if scope != "system" && orgID == nil {
-		return false, "", fmt.Errorf("organization_id is required")
+		return "", fmt.Errorf("organization_id is required")
 	}
 	if scope == "domain" && domainID == nil {
-		return false, "", fmt.Errorf("domain_id is required for domain scope")
+		return "", fmt.Errorf("domain_id is required for domain scope")
 	}
 	if scope == "user" && userID == nil {
-		return false, "", fmt.Errorf("user_id is required for user scope")
+		return "", fmt.Errorf("user_id is required for user scope")
 	}
 	if scope == "system" {
-		orgID = nil
-		domainID = nil
-		userID = nil
-	}
-	if scope != "domain" {
+		orgID, domainID, userID = nil, nil, nil
+	} else if scope != "domain" {
 		domainID = nil
 	}
 	if scope != "user" {
 		userID = nil
 	}
-	domain, err := NormalizeSenderDomain(senderDomain)
+	pattern, err := NormalizeRule(kind, value)
 	if err != nil {
-		return false, "", err
+		return "", err
 	}
-	if action == "block" {
-		protected, err := isConfiguredProtectedDomain(ctx, db, domain)
+	if action == "block" && kind == "domain" {
+		protected, err := isConfiguredProtectedDomain(ctx, db, strings.TrimPrefix(pattern, "*@"))
 		if err != nil {
-			return false, "", err
+			return "", err
 		}
 		if protected {
-			return false, "", fmt.Errorf("cannot block configured protected domain %s", domain)
+			return "", fmt.Errorf("cannot block configured protected domain %s", strings.TrimPrefix(pattern, "*@"))
 		}
 	}
-	pattern := "*@" + domain
-	if _, err := db.Exec(ctx, `
-		DELETE FROM list_entries
-		 WHERE organization_id IS NOT DISTINCT FROM $1
-		   AND domain_id IS NOT DISTINCT FROM $2
-		   AND user_id IS NOT DISTINCT FROM $3
-		   AND scope = $4::listentry_scope
-		   AND lower(pattern) = lower($5)
-	`, orgID, domainID, userID, scope, pattern); err != nil {
-		return false, "", err
+	if _, err := db.Exec(ctx, `DELETE FROM list_entries
+		WHERE organization_id IS NOT DISTINCT FROM $1 AND domain_id IS NOT DISTINCT FROM $2
+		  AND user_id IS NOT DISTINCT FROM $3 AND scope = $4::listentry_scope
+		  AND kind = $5::listentry_kind AND lower(pattern) = lower($6)`, orgID, domainID, userID, scope, kind, pattern); err != nil {
+		return "", err
 	}
-	var id uuid.UUID
-	err = db.QueryRow(ctx, `
-		INSERT INTO list_entries (organization_id, domain_id, user_id, scope, action, pattern, note)
-		VALUES ($1, $2, $3, $4::listentry_scope, $5::listentry_action, $6, $7)
-		RETURNING id
-	`, orgID, domainID, userID, scope, action, pattern, note).Scan(&id)
+	_, err = db.Exec(ctx, `INSERT INTO list_entries (organization_id, domain_id, user_id, scope, action, kind, pattern, note)
+		VALUES ($1, $2, $3, $4::listentry_scope, $5::listentry_action, $6::listentry_kind, $7, $8)`,
+		orgID, domainID, userID, scope, action, kind, pattern, note)
+	return pattern, err
+}
+
+func NormalizeRule(kind, value string) (string, error) {
+	switch strings.ToLower(strings.TrimSpace(kind)) {
+	case "domain":
+		domain, err := NormalizeSenderDomainForPattern(value)
+		if err != nil {
+			return "", err
+		}
+		return "*@" + domain, nil
+	case "email":
+		parsed, err := stdmail.ParseAddress(strings.TrimSpace(value))
+		if err != nil || parsed.Address == "" || !strings.Contains(parsed.Address, "@") {
+			return "", fmt.Errorf("sender email is invalid")
+		}
+		return strings.ToLower(parsed.Address), nil
+	case "ip":
+		value = strings.TrimSpace(value)
+		if addr, err := netip.ParseAddr(value); err == nil {
+			return netip.PrefixFrom(addr.Unmap(), addr.Unmap().BitLen()).String(), nil
+		}
+		prefix, err := netip.ParsePrefix(value)
+		if err != nil {
+			return "", fmt.Errorf("source IP or CIDR is invalid")
+		}
+		return prefix.Masked().String(), nil
+	default:
+		return "", fmt.Errorf("kind must be email, domain, or ip")
+	}
+}
+
+func UpsertDomainDecision(ctx context.Context, db *pgxpool.Pool, orgID *uuid.UUID, domainID *uuid.UUID, userID *uuid.UUID, scope, senderDomain, action, note string) (bool, string, error) {
+	pattern, err := UpsertDecision(ctx, db, orgID, domainID, userID, scope, "domain", senderDomain, action, note)
 	return false, pattern, err
 }
 
@@ -248,8 +284,11 @@ func isConfiguredProtectedDomain(ctx context.Context, db *pgxpool.Pool, senderDo
 type writeReq struct {
 	OrganizationID *uuid.UUID `json:"organization_id,omitempty"`
 	DomainID       *uuid.UUID `json:"domain_id,omitempty"`
+	UserID         *uuid.UUID `json:"user_id,omitempty"`
 	Scope          string     `json:"scope"`
 	Action         string     `json:"action"`
+	Kind           string     `json:"kind,omitempty"`
+	Sender         string     `json:"sender,omitempty"`
 	SenderDomain   string     `json:"sender_domain"`
 	Note           string     `json:"note,omitempty"`
 }
@@ -336,6 +375,12 @@ func (h *Handler) create(w http.ResponseWriter, r *http.Request) {
 		req.Scope = "org"
 	}
 	req.Action = strings.ToLower(strings.TrimSpace(req.Action))
+	if req.Kind == "" {
+		req.Kind = "domain"
+	}
+	if strings.TrimSpace(req.Sender) == "" {
+		req.Sender = req.SenderDomain
+	}
 
 	var orgID *uuid.UUID
 	if req.OrganizationID != nil {
@@ -344,6 +389,7 @@ func (h *Handler) create(w http.ResponseWriter, r *http.Request) {
 		orgID = &ident.OrganizationID
 	}
 	domainID := req.DomainID
+	userID := req.UserID
 	if req.Scope == "system" {
 		if ident.Role != "super_admin" {
 			httpx.WriteError(w, http.StatusForbidden, "system scope requires super_admin")
@@ -362,15 +408,26 @@ func (h *Handler) create(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		orgID = &domainOrg
+	} else if req.Scope == "user" {
+		if userID == nil {
+			userID = &ident.UserID
+		}
+		var userOrg uuid.UUID
+		if err := h.DB.QueryRow(r.Context(), `SELECT organization_id FROM users WHERE id = $1 AND is_active = true`, *userID).Scan(&userOrg); err != nil {
+			httpx.WriteError(w, http.StatusNotFound, "user not found")
+			return
+		}
+		orgID = &userOrg
 	}
 	if req.Scope != "domain" {
 		domainID = nil
 	}
-	if orgID != nil && !scope.CanAdmin(ident.Role, *orgID) {
+	selfUserRule := req.Scope == "user" && userID != nil && *userID == ident.UserID
+	if orgID != nil && !selfUserRule && !scope.CanAdmin(ident.Role, *orgID) {
 		httpx.WriteError(w, http.StatusForbidden, "forbidden")
 		return
 	}
-	_, pattern, err := UpsertDomainDecision(r.Context(), h.DB, orgID, domainID, nil, req.Scope, req.SenderDomain, req.Action, strings.TrimSpace(req.Note))
+	pattern, err := UpsertDecision(r.Context(), h.DB, orgID, domainID, userID, req.Scope, req.Kind, req.Sender, req.Action, strings.TrimSpace(req.Note))
 	if err != nil {
 		httpx.WriteError(w, http.StatusBadRequest, err.Error())
 		return
@@ -381,13 +438,14 @@ func (h *Handler) create(w http.ResponseWriter, r *http.Request) {
 		  FROM list_entries le
 		 WHERE le.organization_id IS NOT DISTINCT FROM $1
 		   AND le.domain_id IS NOT DISTINCT FROM $2
-		   AND le.user_id IS NULL
+		   AND le.user_id IS NOT DISTINCT FROM $6
 		   AND le.scope = $3::listentry_scope
 		   AND le.action = $4::listentry_action
+		   AND le.kind = $7::listentry_kind
 		   AND lower(le.pattern) = lower($5)
 		 ORDER BY le.created_at DESC
 		 LIMIT 1
-	`, orgID, domainID, req.Scope, req.Action, pattern), &entry); err != nil {
+	`, orgID, domainID, req.Scope, req.Action, pattern, userID, req.Kind), &entry); err != nil {
 		httpx.WriteError(w, http.StatusInternalServerError, "read created entry failed")
 		return
 	}
@@ -418,7 +476,8 @@ func (h *Handler) del(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteError(w, http.StatusNotFound, "not found")
 		return
 	}
-	if entry.UserID != nil {
+	selfUserRule := entry.UserID != nil && *entry.UserID == ident.UserID
+	if entry.UserID != nil && !selfUserRule && (entry.OrganizationID == nil || !scope.CanAdmin(ident.Role, *entry.OrganizationID)) {
 		httpx.WriteError(w, http.StatusForbidden, "forbidden")
 		return
 	}
@@ -427,7 +486,7 @@ func (h *Handler) del(w http.ResponseWriter, r *http.Request) {
 			httpx.WriteError(w, http.StatusForbidden, "forbidden")
 			return
 		}
-	} else if !scope.CanAdmin(ident.Role, *entry.OrganizationID) {
+	} else if !selfUserRule && !scope.CanAdmin(ident.Role, *entry.OrganizationID) {
 		httpx.WriteError(w, http.StatusForbidden, "forbidden")
 		return
 	}
@@ -476,7 +535,7 @@ func scanEntry(row pgx.Row, entry *Entry) error {
 	var orgID pgtype.UUID
 	var domainID pgtype.UUID
 	var userID pgtype.UUID
-	if err := row.Scan(&id, &orgID, &domainID, &userID, &entry.Scope, &entry.Action, &entry.Pattern, &entry.Note, &entry.BlockedCount, &entry.CreatedAt); err != nil {
+	if err := row.Scan(&id, &orgID, &domainID, &userID, &entry.Scope, &entry.Action, &entry.Kind, &entry.Pattern, &entry.Note, &entry.BlockedCount, &entry.CreatedAt); err != nil {
 		return err
 	}
 	if !id.Valid {
@@ -488,6 +547,10 @@ func scanEntry(row pgx.Row, entry *Entry) error {
 	entry.UserID = uuidPtrFromPgtype(userID)
 	entry.SenderDomain = strings.TrimPrefix(strings.ToLower(strings.TrimSpace(entry.Pattern)), "*@")
 	entry.SenderDomain = strings.TrimPrefix(entry.SenderDomain, "@")
+	entry.Sender = entry.SenderDomain
+	if entry.Kind == "email" || entry.Kind == "ip" {
+		entry.Sender = entry.Pattern
+	}
 	return nil
 }
 

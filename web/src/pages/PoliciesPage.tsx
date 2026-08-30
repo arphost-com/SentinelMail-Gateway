@@ -23,6 +23,7 @@ interface Policy {
   settings?: {
     sender_blacklist_enabled?: boolean;
     challenge_response_enabled?: boolean;
+    challenge_response_require_verified_source?: boolean;
     brand_impersonation_enabled?: boolean;
     brand_impersonation_display_name_enabled?: boolean;
     brand_impersonation_subject_enabled?: boolean;
@@ -56,6 +57,7 @@ interface Form {
   quarantine_action: string;
   sender_blacklist_enabled: boolean;
   challenge_response_enabled: boolean;
+  challenge_response_require_verified_source: boolean;
   brand_impersonation_enabled: boolean;
   brand_impersonation_display_name_enabled: boolean;
   brand_impersonation_subject_enabled: boolean;
@@ -108,19 +110,19 @@ const PRESETS = [
     id: "balanced",
     label: "Balanced",
     hint: "Tag clear spam while avoiding aggressive false positives.",
-    values: { spam_threshold: 5, quarantine_threshold: 7, reject_threshold: 15, dmarc_enforce: false, enable_greylist: true, quarantine_action: "tag", sender_blacklist_enabled: true, challenge_response_enabled: false, ...DETECTION_DEFAULTS },
+    values: { spam_threshold: 5, quarantine_threshold: 7, reject_threshold: 15, dmarc_enforce: false, enable_greylist: true, quarantine_action: "tag", sender_blacklist_enabled: true, challenge_response_enabled: false, challenge_response_require_verified_source: true, ...DETECTION_DEFAULTS },
   },
   {
     id: "aggressive",
     label: "Aggressive",
     hint: "Hold more bulk mail and suspicious messages.",
-    values: { spam_threshold: 4, quarantine_threshold: 6, reject_threshold: 12, dmarc_enforce: true, enable_greylist: true, quarantine_action: "quarantine", sender_blacklist_enabled: true, challenge_response_enabled: false, ...DETECTION_DEFAULTS },
+    values: { spam_threshold: 4, quarantine_threshold: 6, reject_threshold: 12, dmarc_enforce: true, enable_greylist: true, quarantine_action: "quarantine", sender_blacklist_enabled: true, challenge_response_enabled: false, challenge_response_require_verified_source: true, ...DETECTION_DEFAULTS },
   },
   {
     id: "permissive",
     label: "Permissive",
     hint: "Tag likely spam but quarantine only high-confidence abuse.",
-    values: { spam_threshold: 6, quarantine_threshold: 10, reject_threshold: 18, dmarc_enforce: false, enable_greylist: false, quarantine_action: "tag", sender_blacklist_enabled: true, challenge_response_enabled: false, ...DETECTION_DEFAULTS },
+    values: { spam_threshold: 6, quarantine_threshold: 10, reject_threshold: 18, dmarc_enforce: false, enable_greylist: false, quarantine_action: "tag", sender_blacklist_enabled: true, challenge_response_enabled: false, challenge_response_require_verified_source: true, ...DETECTION_DEFAULTS },
   },
 ];
 
@@ -215,6 +217,7 @@ export function PoliciesPage() {
             quarantine_action: "tag",
             sender_blacklist_enabled: true,
             challenge_response_enabled: false,
+            challenge_response_require_verified_source: true,
             ...DETECTION_DEFAULTS,
           }}
           onClose={() => setCreating(false)}
@@ -244,6 +247,7 @@ export function PoliciesPage() {
             quarantine_action: editing.quarantine_action,
             sender_blacklist_enabled: editing.settings?.sender_blacklist_enabled ?? true,
             challenge_response_enabled: editing.settings?.challenge_response_enabled ?? false,
+            challenge_response_require_verified_source: editing.settings?.challenge_response_require_verified_source ?? true,
             campaign_threshold: editing.settings?.campaign_threshold ?? 25,
             campaign_action: editing.settings?.campaign_action ?? "aggregate",
             brand_impersonation_enabled: editing.settings?.brand_impersonation_enabled ?? true,
@@ -441,6 +445,13 @@ function PolicyModal({
               </label>
               <HelpTooltip text="Hold first-time inbound senders for this policy until the recipient releases or blocks the sender. Approved senders are allowed for that user; denied senders are blocked for that user." />
             </div>
+            <div className="inline-flex items-center gap-2 text-sm">
+              <label className="inline-flex items-center gap-2">
+                <input type="checkbox" checked={form.challenge_response_require_verified_source} onChange={(e) => setBool("challenge_response_require_verified_source", e.target.checked)} />
+                <span>Require verified source for allow rules</span>
+              </label>
+              <HelpTooltip text="Even an explicitly allowed sender remains held unless DMARC passes through aligned SPF or DKIM and the sending server has a usable reverse hostname. Keep this enabled to prevent spoofed allowlist bypasses." />
+            </div>
           </div>
         </div>
 
@@ -556,6 +567,7 @@ function toPolicyPayload(form: Form) {
   const {
     sender_blacklist_enabled,
     challenge_response_enabled,
+    challenge_response_require_verified_source,
     brand_impersonation_enabled,
     brand_impersonation_display_name_enabled,
     brand_impersonation_subject_enabled,
@@ -577,6 +589,7 @@ function toPolicyPayload(form: Form) {
     settings: {
       sender_blacklist_enabled,
       challenge_response_enabled,
+      challenge_response_require_verified_source,
       brand_impersonation_enabled,
       brand_impersonation_display_name_enabled,
       brand_impersonation_subject_enabled,

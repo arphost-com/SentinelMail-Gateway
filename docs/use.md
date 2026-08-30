@@ -35,6 +35,17 @@ You're `org_user`. The sidebar shows the things you can do:
 - **Release** — message goes to your inbox (worker re-injects to your downstream MX).
 - **Delete** — drops the row to `deleted` state. The original .eml is purged after the org's retention window.
 - **Block sender / Block sender domain** — reports the quarantine item as spam, marks it handled, and adds a sender blocklist entry so future mail from the same sender or domain is blocked.
+
+## Strict challenge-response approval
+
+When **Challenge-response approval** is enabled for a policy or mailbox, inbound mail is allowlist-first:
+
+- An existing block for the source email, sender domain, or source IP/CIDR is rejected and logged without creating an approval notice.
+- An explicitly allowed email address or verified sender domain may be delivered only when DMARC passes through aligned SPF or DKIM and the sending server supplies a usable reverse hostname. The normal malware, threat-intelligence, and hard authentication checks still apply.
+- Every other inbound sender is held in quarantine as pending approval. SentinelMail emails the protected recipient and the organization's active administrators, while suppressing duplicate notices for the same held message and notification recipient.
+- Releasing pending mail creates an exact-address allow rule for the protected mailbox, including when an administrator performs the release. Blocking it creates a persistent deny rule, so later messages are rejected and only logged.
+
+Administrators can set strict approval at organization or protected-domain policy scope and override it for an individual mailbox from **Users**. Users and delegated administrators can create exact-address or verified-domain allow rules; source IP/CIDR rules are block-only.
 - **Purge expired** — admin-only cleanup that physically removes quarantine rows and stored message blobs whose retention window has expired. The default inbox and quarantine retention window is 90 days and can be set up to 365 days.
 
 ### Check what got delivered

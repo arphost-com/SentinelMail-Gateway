@@ -16,9 +16,10 @@ import (
 )
 
 type senderPolicyReq struct {
-	From    string   `json:"from"`
-	ReplyTo string   `json:"reply_to,omitempty"`
-	To      []string `json:"to"`
+	From     string   `json:"from"`
+	ReplyTo  string   `json:"reply_to,omitempty"`
+	To       []string `json:"to"`
+	ClientIP string   `json:"client_ip,omitempty"`
 }
 
 type senderPolicyResp struct {
@@ -53,7 +54,7 @@ func (h *IngestHandler) senderPolicy(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteError(w, http.StatusInternalServerError, "policy resolve: "+err.Error())
 		return
 	}
-	action, scope, err := h.lookupSenderList(r.Context(), *orgID, domainID, strings.ToLower(strings.TrimSpace(req.To[0])), senderListLookupAddresses(req.From, req.ReplyTo)...)
+	action, scope, err := h.lookupSenderListWithIP(r.Context(), *orgID, domainID, strings.ToLower(strings.TrimSpace(req.To[0])), req.ClientIP, senderListLookupAddresses(req.From, req.ReplyTo)...)
 	if err != nil {
 		httpx.WriteError(w, http.StatusInternalServerError, "sender policy lookup: "+err.Error())
 		return
@@ -73,6 +74,19 @@ func (h *IngestHandler) senderPolicy(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *IngestHandler) lookupSenderList(ctx context.Context, orgID uuid.UUID, domainID *uuid.UUID, recipient string, addresses ...string) (string, string, error) {
+	return h.lookupSenderListWithIP(ctx, orgID, domainID, recipient, "", addresses...)
+}
+
+func (h *IngestHandler) lookupSenderListWithIP(ctx context.Context, orgID uuid.UUID, domainID *uuid.UUID, recipient, clientIP string, addresses ...string) (string, string, error) {
+	if strings.TrimSpace(clientIP) != "" {
+		action, scope, err := h.lookupSenderListIP(ctx, orgID, domainID, recipient, clientIP)
+		if err != nil {
+			return "", "", err
+		}
+		if action == "block" {
+			return action, scope, nil
+		}
+	}
 	var allowedScope string
 	for _, addr := range senderListLookupAddresses(addresses...) {
 		action, scope, err := h.lookupSenderListAddress(ctx, orgID, domainID, recipient, addr)
@@ -90,6 +104,32 @@ func (h *IngestHandler) lookupSenderList(ctx context.Context, orgID uuid.UUID, d
 		return "allow", allowedScope, nil
 	}
 	return "", "", nil
+}
+
+func (h *IngestHandler) lookupSenderListIP(ctx context.Context, orgID uuid.UUID, domainID *uuid.UUID, recipient, clientIP string) (string, string, error) {
+	var action, scope string
+	err := h.DB.QueryRow(ctx, `
+		WITH matched_user AS (
+			SELECT id FROM users WHERE organization_id = $1 AND lower(email::text) = $2 LIMIT 1
+		)
+		SELECT action::text,
+		       CASE WHEN user_id IS NOT NULL THEN 'user' WHEN domain_id IS NOT NULL THEN 'domain'
+		            WHEN organization_id IS NULL THEN 'system' ELSE 'org' END
+		  FROM list_entries
+		 WHERE kind = 'ip'::listentry_kind
+		   AND action = 'block'::listentry_action
+		   AND $4::inet <<= pattern::cidr
+		   AND (organization_id IS NULL OR organization_id = $1)
+		   AND (domain_id IS NULL OR domain_id = $3)
+		   AND (user_id IS NULL OR user_id = (SELECT id FROM matched_user))
+		 ORDER BY CASE WHEN user_id IS NOT NULL THEN 0 WHEN domain_id = $3 THEN 1
+		               WHEN organization_id IS NOT NULL THEN 2 ELSE 3 END, created_at DESC
+		 LIMIT 1
+	`, orgID, recipient, domainID, clientIP).Scan(&action, &scope)
+	if err == pgx.ErrNoRows {
+		return "", "", nil
+	}
+	return action, scope, err
 }
 
 func (h *IngestHandler) lookupSenderListAddress(ctx context.Context, orgID uuid.UUID, domainID *uuid.UUID, recipient, from string) (string, string, error) {
@@ -114,15 +154,15 @@ func (h *IngestHandler) lookupSenderListAddress(ctx context.Context, orgID uuid.
 		       END AS matched_scope
 		  FROM list_entries
 		 WHERE (organization_id IS NULL OR organization_id = $1)
+		   AND kind IN ('email'::listentry_kind, 'domain'::listentry_kind)
 		   AND lower(pattern) = ANY($4)
 		   AND (
 		     organization_id IS NULL
 		     OR domain_id IS NULL
 		     OR domain_id = $3
-		     OR action = 'block'::listentry_action
 		   )
 		   AND (user_id IS NULL OR user_id = (SELECT id FROM matched_user))
-		   ORDER BY
+		   ORDER BY CASE action WHEN 'block' THEN 0 ELSE 1 END,
 		   CASE
 		     WHEN user_id IS NOT NULL THEN 0
 		     WHEN domain_id = $3 THEN 1
@@ -131,7 +171,6 @@ func (h *IngestHandler) lookupSenderListAddress(ctx context.Context, orgID uuid.
 		     ELSE 4
 		   END,
 		   COALESCE(array_position($4::text[], lower(pattern)), 999),
-		   CASE action WHEN 'block' THEN 0 ELSE 1 END,
 		   created_at DESC
 		 LIMIT 1
 	`, orgID, recipient, domainID, patterns).Scan(&action, &scope)

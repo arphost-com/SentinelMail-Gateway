@@ -238,6 +238,7 @@ local function post_mail_event(task, source)
     reply_to          = gather_header(task, "Reply-To"),
     to                = to_list,
     client_ip         = tostring(task:get_from_ip() or ""),
+    client_hostname   = task:get_hostname() or "",
     helo              = task:get_helo() or "",
     subject           = task:get_subject() or "",
     size_bytes        = task:get_size() or 0,

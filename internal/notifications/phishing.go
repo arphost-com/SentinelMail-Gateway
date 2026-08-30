@@ -34,8 +34,16 @@ type phishingMessage struct {
 type alertUser struct {
 	ID        uuid.UUID
 	Email     string
+	Role      string
 	Frequency string
 	LastSent  *time.Time
+}
+
+type pendingApproval struct {
+	ToAddr     string
+	FromAddr   string
+	Subject    string
+	ReceivedAt time.Time
 }
 
 // SendPhishingAlertForMailLog sends recipient alerts for a mail log that has
@@ -122,7 +130,7 @@ func alertUsers(ctx context.Context, db *pgxpool.Pool, msg *phishingMessage) ([]
 		return nil, nil
 	}
 	rows, err := db.Query(ctx, `
-		SELECT id, email::text, phishing_alert_frequency, phishing_alert_last_sent_at
+		SELECT id, email::text, role::text, phishing_alert_frequency, phishing_alert_last_sent_at
 		  FROM users
 		 WHERE organization_id = $1
 		   AND is_active = true
@@ -136,7 +144,7 @@ func alertUsers(ctx context.Context, db *pgxpool.Pool, msg *phishingMessage) ([]
 	var out []alertUser
 	for rows.Next() {
 		var u alertUser
-		if err := rows.Scan(&u.ID, &u.Email, &u.Frequency, &u.LastSent); err != nil {
+		if err := rows.Scan(&u.ID, &u.Email, &u.Role, &u.Frequency, &u.LastSent); err != nil {
 			return nil, err
 		}
 		out = append(out, u)
@@ -149,11 +157,11 @@ func challengeUsers(ctx context.Context, db *pgxpool.Pool, msg *phishingMessage)
 		return nil, nil
 	}
 	rows, err := db.Query(ctx, `
-		SELECT id, email::text, phishing_alert_frequency, phishing_alert_last_sent_at
+		SELECT id, email::text, role::text, phishing_alert_frequency, phishing_alert_last_sent_at
 		  FROM users
 		 WHERE organization_id = $1
 		   AND is_active = true
-		   AND lower(email::text) = ANY($2)
+		   AND (lower(email::text) = ANY($2) OR role = 'org_admin'::user_role)
 	`, msg.OrganizationID, lowerAddrs(msg.ToAddrs))
 	if err != nil {
 		return nil, err
@@ -162,7 +170,7 @@ func challengeUsers(ctx context.Context, db *pgxpool.Pool, msg *phishingMessage)
 	var out []alertUser
 	for rows.Next() {
 		var u alertUser
-		if err := rows.Scan(&u.ID, &u.Email, &u.Frequency, &u.LastSent); err != nil {
+		if err := rows.Scan(&u.ID, &u.Email, &u.Role, &u.Frequency, &u.LastSent); err != nil {
 			return nil, err
 		}
 		out = append(out, u)
@@ -226,6 +234,24 @@ func sendOne(ctx context.Context, db *pgxpool.Pool, msg *phishingMessage, u aler
 }
 
 func sendChallengeOne(ctx context.Context, db *pgxpool.Pool, msg *phishingMessage, u alertUser) error {
+	var alreadySent bool
+	if err := db.QueryRow(ctx, `
+		SELECT EXISTS (
+			SELECT 1 FROM sent_emails se
+			 WHERE mail_log_id = $1 AND kind = 'challenge_response_alert'
+			   AND EXISTS (SELECT 1 FROM unnest(se.to_addrs) AS addr WHERE lower(addr) = lower($2))
+			   AND status IN ('pending'::sent_email_status, 'sent'::sent_email_status)
+		)
+	`, msg.MailLogID, u.Email).Scan(&alreadySent); err != nil {
+		return err
+	}
+	if alreadySent {
+		return nil
+	}
+	pending, err := pendingApprovals(ctx, db, msg.OrganizationID, u)
+	if err != nil {
+		return err
+	}
 	host, port, err := gatewayForRecipient(ctx, db, msg.OrganizationID, u.Email)
 	if err != nil {
 		return err
@@ -234,7 +260,7 @@ func sendChallengeOne(ctx context.Context, db *pgxpool.Pool, msg *phishingMessag
 	if err != nil {
 		return err
 	}
-	raw, err := buildChallengeResponseEmail(ctx, db, from, u.Email, msg)
+	raw, err := buildChallengeResponseEmail(ctx, db, from, u.Email, msg, pending)
 	if err != nil {
 		return err
 	}
@@ -254,6 +280,39 @@ func sendChallengeOne(ctx context.Context, db *pgxpool.Pool, msg *phishingMessag
 	}, func() error {
 		return smtp.SendMail(net.JoinHostPort(host, fmt.Sprint(port)), nil, from.Address, []string{u.Email}, raw)
 	})
+}
+
+func pendingApprovals(ctx context.Context, db *pgxpool.Pool, orgID uuid.UUID, u alertUser) ([]pendingApproval, error) {
+	clauses := ""
+	args := []any{orgID}
+	if u.Role == "org_user" {
+		clauses = " AND lower(qe.to_addr) = lower($2)"
+		args = append(args, u.Email)
+	}
+	rows, err := db.Query(ctx, `
+		SELECT qe.to_addr, COALESCE(qe.from_addr, ''), COALESCE(qe.subject, ''), qe.received_at
+		  FROM quarantine_entries qe
+		  JOIN mail_logs ml ON ml.id = qe.mail_log_id
+		 WHERE qe.organization_id = $1
+		   AND qe.state = 'held'::quarantine_state
+		   AND ml.disposition = 'quarantined'::mail_disposition
+		   AND lower(COALESCE(ml.reason, '')) = 'pending recipient challenge-response approval'`+clauses+`
+		 ORDER BY qe.received_at DESC
+		 LIMIT 25
+	`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []pendingApproval{}
+	for rows.Next() {
+		var item pendingApproval
+		if err := rows.Scan(&item.ToAddr, &item.FromAddr, &item.Subject, &item.ReceivedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, item)
+	}
+	return out, rows.Err()
 }
 
 func gatewayForRecipient(ctx context.Context, db *pgxpool.Pool, orgID uuid.UUID, recipient string) (string, int, error) {
@@ -349,11 +408,11 @@ func buildPhishingAlertEmail(ctx context.Context, db *pgxpool.Pool, from *stdmai
 	return []byte(body), nil
 }
 
-func buildChallengeResponseEmail(ctx context.Context, db *pgxpool.Pool, from *stdmail.Address, to string, msg *phishingMessage) ([]byte, error) {
+func buildChallengeResponseEmail(ctx context.Context, db *pgxpool.Pool, from *stdmail.Address, to string, msg *phishingMessage, pending []pendingApproval) ([]byte, error) {
 	link := quarantineURL(ctx, db, msg, to)
 	subject := "SentinelMail is holding mail for your approval"
-	text := textChallengeAlert(to, msg, link)
-	htmlBody := htmlChallengeAlert(to, msg, link)
+	text := textChallengeAlert(to, msg, pending, link)
+	htmlBody := htmlChallengeAlert(to, msg, pending, link)
 	boundary := "smg-challenge-response-boundary"
 	headers := []string{
 		"From: " + from.String(),
@@ -389,11 +448,13 @@ func textAlert(to string, msg *phishingMessage, link string) string {
 	return strings.Join(lines, "\r\n")
 }
 
-func textChallengeAlert(to string, msg *phishingMessage, link string) string {
+func textChallengeAlert(to string, msg *phishingMessage, pending []pendingApproval, link string) string {
+	recipients := strings.Join(msg.ToAddrs, ", ")
 	lines := []string{
 		"SentinelMail is holding a message until you approve or deny the sender.",
 		"",
-		"Recipient: " + to,
+		"Protected recipient: " + recipients,
+		"Approval notice sent to: " + to,
 		"From: " + emptyDash(msg.FromAddr),
 		"Subject: " + emptyDash(msg.Subject),
 		"Source IP: " + emptyDash(msg.ClientIP),
@@ -401,7 +462,13 @@ func textChallengeAlert(to string, msg *phishingMessage, link string) string {
 	if link != "" {
 		lines = append(lines, "", "Review it here: "+link)
 	}
-	lines = append(lines, "", "Release the message to allow this sender for your mailbox. Block the sender to deny future mail, or delete only this held message.")
+	if len(pending) > 0 {
+		lines = append(lines, "", fmt.Sprintf("Currently waiting (%d, newest 25 shown):", len(pending)))
+		for _, item := range pending {
+			lines = append(lines, "- "+item.ReceivedAt.Format("2006-01-02 15:04 MST")+" | "+item.ToAddr+" | "+emptyDash(item.FromAddr)+" | "+emptyDash(item.Subject))
+		}
+	}
+	lines = append(lines, "", "Release the message to allow this sender for that mailbox. Allowed senders must still pass DMARC through aligned SPF or DKIM and have a usable reverse hostname. Block the sender to deny future mail, or delete only this held message.")
 	return strings.Join(lines, "\r\n")
 }
 
@@ -423,11 +490,20 @@ func htmlAlert(to string, msg *phishingMessage, link string) string {
 </table></td></tr></table></body></html>`
 }
 
-func htmlChallengeAlert(to string, msg *phishingMessage, link string) string {
+func htmlChallengeAlert(to string, msg *phishingMessage, pending []pendingApproval, link string) string {
+	recipients := strings.Join(msg.ToAddrs, ", ")
 	button := ""
 	if link != "" {
 		escapedLink := html.EscapeString(link)
 		button = `<tr><td style="padding:24px 0 4px"><a href="` + escapedLink + `" style="display:inline-block;background:#0f766e;color:#ffffff;text-decoration:none;font-weight:700;padding:12px 18px;border-radius:8px">Review sender</a></td></tr>`
+	}
+	pendingRows := ""
+	for _, item := range pending {
+		pendingRows += `<tr><td style="padding:8px;border-bottom:1px solid #e2e8f0">` + html.EscapeString(item.ReceivedAt.Format("Jan 2 15:04")) + `</td><td style="padding:8px;border-bottom:1px solid #e2e8f0">` + html.EscapeString(item.ToAddr) + `</td><td style="padding:8px;border-bottom:1px solid #e2e8f0">` + html.EscapeString(emptyDash(item.FromAddr)) + `</td><td style="padding:8px;border-bottom:1px solid #e2e8f0">` + html.EscapeString(emptyDash(item.Subject)) + `</td></tr>`
+	}
+	pendingTable := ""
+	if pendingRows != "" {
+		pendingTable = `<h2 style="margin:22px 0 8px;font-size:17px">Currently waiting (newest 25)</h2><table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse;font-size:12px"><tr><th align="left">Time</th><th align="left">Recipient</th><th align="left">From</th><th align="left">Subject</th></tr>` + pendingRows + `</table>`
 	}
 	return `<!doctype html><html><body style="margin:0;background:#f4f7fb;color:#102033;font-family:Arial,Helvetica,sans-serif">
 <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background:#f4f7fb;padding:28px 12px"><tr><td align="center">
@@ -435,9 +511,9 @@ func htmlChallengeAlert(to string, msg *phishingMessage, link string) string {
 <tr><td style="background:#134e4a;color:#ffffff;padding:22px 26px"><div style="font-size:13px;letter-spacing:.08em;text-transform:uppercase;color:#99f6e4">SentinelMail Gateway</div><h1 style="margin:8px 0 0;font-size:24px;line-height:1.25">Sender approval required</h1></td></tr>
 <tr><td style="padding:26px"><p style="margin:0 0 18px;font-size:16px;line-height:1.5">A message is being held until you decide whether this sender is allowed to reach your mailbox.</p>
 <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse;background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px">
-` + detailRow("Recipient", to) + detailRow("From", emptyDash(msg.FromAddr)) + detailRow("Subject", emptyDash(msg.Subject)) + detailRow("Source IP", emptyDash(msg.ClientIP)) + `
-</table><table role="presentation" cellspacing="0" cellpadding="0">` + button + `</table>
-<p style="margin:18px 0 0;color:#64748b;font-size:13px;line-height:1.5">Release the message to allow this sender for your mailbox. Block the sender to deny future mail, or delete only this held message.</p></td></tr>
+` + detailRow("Protected recipient", recipients) + detailRow("Approval notice", to) + detailRow("From", emptyDash(msg.FromAddr)) + detailRow("Subject", emptyDash(msg.Subject)) + detailRow("Source IP", emptyDash(msg.ClientIP)) + `
+</table>` + pendingTable + `<table role="presentation" cellspacing="0" cellpadding="0">` + button + `</table>
+<p style="margin:18px 0 0;color:#64748b;font-size:13px;line-height:1.5">Release the message to allow this sender for that mailbox. Allowed senders must still pass DMARC through aligned SPF or DKIM and have a usable reverse hostname. Block the sender to deny future mail, or delete only this held message.</p></td></tr>
 </table></td></tr></table></body></html>`
 }
 

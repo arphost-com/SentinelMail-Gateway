@@ -50,8 +50,8 @@ VALUES (:'selected_org', :'created_domain', '127.0.0.1', 9, false, true);
 INSERT INTO policies (organization_id, domain_id, name, settings)
 VALUES (:'selected_org', :'created_domain', 'OP#2038 concurrency smoke', '{"sender_blacklist_enabled":true}'::jsonb);
 
-INSERT INTO list_entries (organization_id, domain_id, scope, action, pattern, note)
-VALUES (:'selected_org', :'created_domain', 'domain', 'block', :'test_sender', 'Temporary OP#2038 concurrency smoke entry');
+INSERT INTO list_entries (organization_id, domain_id, scope, action, kind, pattern, note)
+VALUES (:'selected_org', :'created_domain', 'domain', 'block', 'email', :'test_sender', 'Temporary OP#2038 concurrency smoke entry');
 SQL
 
 rspamd_container="$("${compose[@]}" ps -q rspamd)"

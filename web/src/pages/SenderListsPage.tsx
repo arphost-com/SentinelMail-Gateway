@@ -18,7 +18,9 @@ interface SenderListEntry {
   domain_id?: string;
   scope: "system" | "org" | "domain" | "user";
   action: "allow" | "block";
+  kind: "email" | "domain" | "ip";
   pattern: string;
+  sender: string;
   sender_domain: string;
   note?: string;
   blocked_count: number;
@@ -36,6 +38,8 @@ interface Org {
   id: string;
   name: string;
 }
+
+interface User { id: string; organization_id: string; email: string }
 
 interface Policy {
   id: string;
@@ -57,17 +61,20 @@ interface Policy {
 
 interface Form {
   action: "allow" | "block";
-  scope: "system" | "org" | "domain";
+  kind: "email" | "domain" | "ip";
+  scope: "system" | "org" | "domain" | "user";
   organization_id: string;
   domain_id: string;
-  sender_domain: string;
+  user_id: string;
+  sender: string;
   note: string;
 }
 
 export function SenderListsPage() {
   const qc = useQueryClient();
   const { me } = useAuth();
-  const canManage = isAdmin(me?.role);
+  const canManage = Boolean(me);
+  const canManageAdmin = isAdmin(me?.role);
   const canManageSystem = me?.role === "super_admin";
   const [creating, setCreating] = useState(false);
   const [search, setSearch] = useState("");
@@ -88,6 +95,11 @@ export function SenderListsPage() {
   const orgs = useQuery({
     queryKey: ["orgs", "for-select"],
     queryFn: () => api.get<ListResponse<Org>>("/orgs?limit=500"),
+  });
+  const users = useQuery({
+    queryKey: ["users", "sender-list-select"],
+    queryFn: () => api.get<ListResponse<User>>("/users?limit=500"),
+    enabled: canManageAdmin,
   });
   const policies = useQuery({
     queryKey: ["policies", "sender-list-settings"],
@@ -129,7 +141,7 @@ export function SenderListsPage() {
 
   const columns: ColumnDef<SenderListEntry>[] = [
     { key: "action", header: "List", width: 12, sortValue: (e) => e.action, render: (e) => e.action === "allow" ? "Allowlist" : "Blocklist" },
-    { key: "sender", header: "Sender", width: 24, sortValue: (e) => e.sender_domain, render: (e) => <strong>{e.sender_domain}</strong> },
+    { key: "sender", header: "Sender / source", width: 24, sortValue: (e) => e.sender, render: (e) => <strong>{e.sender}</strong> },
     { key: "scope", header: "Applies to", width: 26, sortValue: (e) => `${e.scope}:${domainName(e.domain_id)}`, render: (e) => scopeLabel(e, orgName, domainName) },
     { key: "blocked", header: "Blocked", width: 10, className: "text-right tabular-nums", sortValue: (e) => e.blocked_count, render: (e) => e.action === "block" ? e.blocked_count.toLocaleString() : "—" },
     { key: "note", header: "Note", width: 24, sortValue: (e) => e.note ?? "", render: (e) => <span className="block truncate" title={e.note}>{e.note || "-"}</span> },
@@ -165,7 +177,7 @@ export function SenderListsPage() {
                     <input
                       type="checkbox"
                       checked={enabled}
-                      disabled={!canManage || toggleBlacklist.isPending}
+                      disabled={!canManageAdmin || toggleBlacklist.isPending}
                       onChange={(event) => toggleBlacklist.mutate({ domain, enabled: event.target.checked })}
                       aria-label={`Use blacklist for ${domain.name}`}
                     />
@@ -210,7 +222,7 @@ export function SenderListsPage() {
               size="sm"
               variant="danger"
               disabled={remove.isPending}
-              onClick={() => confirmDanger(`Remove ${entry.sender_domain} from the ${entry.action}list?`) && remove.mutate(entry.id)}
+              onClick={() => confirmDanger(`Remove ${entry.sender} from the ${entry.action}list?`) && remove.mutate(entry.id)}
             >
               Remove
             </Button>
@@ -226,12 +238,17 @@ export function SenderListsPage() {
         <SenderListModal
           orgs={orgs.data?.items ?? []}
           domains={domains.data?.items ?? []}
+          users={users.data?.items ?? []}
+          currentUser={me ? { id: me.user_id, organization_id: me.organization_id, email: me.email } : undefined}
+          canManageAdmin={canManageAdmin}
           initial={{
             action: "allow",
-            scope: canManageSystem ? "system" : "org",
-            organization_id: domains.data?.items?.[0]?.organization_id ?? orgs.data?.items?.[0]?.id ?? "",
+            kind: "email",
+            scope: canManageAdmin ? (canManageSystem ? "system" : "org") : "user",
+            organization_id: me?.organization_id ?? domains.data?.items?.[0]?.organization_id ?? orgs.data?.items?.[0]?.id ?? "",
             domain_id: "",
-            sender_domain: "",
+            user_id: canManageAdmin ? users.data?.items?.[0]?.id ?? "" : me?.user_id ?? "",
+            sender: "",
             note: "",
           }}
           onClose={() => setCreating(false)}
@@ -241,7 +258,9 @@ export function SenderListsPage() {
               scope: form.scope,
               organization_id: form.scope === "org" ? form.organization_id : undefined,
               domain_id: form.scope === "domain" ? form.domain_id : undefined,
-              sender_domain: form.sender_domain,
+              user_id: form.scope === "user" ? form.user_id : undefined,
+              kind: form.kind,
+              sender: form.sender,
               note: form.note,
             });
             qc.invalidateQueries({ queryKey: ["sender-lists"] });
@@ -257,6 +276,9 @@ export function SenderListsPage() {
 function SenderListModal({
   orgs,
   domains,
+  users,
+  currentUser,
+  canManageAdmin,
   initial,
   canManageSystem,
   onClose,
@@ -264,6 +286,9 @@ function SenderListModal({
 }: {
   orgs: Org[];
   domains: Domain[];
+  users: User[];
+  currentUser?: User;
+  canManageAdmin: boolean;
   initial: Form;
   canManageSystem: boolean;
   onClose: () => void;
@@ -276,8 +301,8 @@ function SenderListModal({
     () => domains.filter((domain) => !form.organization_id || domain.organization_id === form.organization_id),
     [domains, form.organization_id],
   );
-  const normalizedSenderDomain = normalizeSenderDomain(form.sender_domain);
-  const blocksProtectedDomain = form.action === "block" && domains.some((domain) => domain.name.toLowerCase() === normalizedSenderDomain);
+  const normalizedSenderDomain = normalizeSenderDomain(form.sender);
+  const blocksProtectedDomain = form.kind === "domain" && form.action === "block" && domains.some((domain) => domain.name.toLowerCase() === normalizedSenderDomain);
 
   function updateScope(scope: Form["scope"]) {
     setForm({
@@ -308,7 +333,7 @@ function SenderListModal({
     <Modal
       open
       onClose={onClose}
-      title="Add sender domain"
+      title="Add allow/block rule"
       footer={
         <>
           <Button variant="secondary" onClick={onClose} disabled={busy}>Cancel</Button>
@@ -324,15 +349,29 @@ function SenderListModal({
             className="block w-full rounded border border-border bg-surface px-3 py-2 text-fg"
             required
           >
-            <option value="allow">Allowlist</option>
+            {form.kind !== "ip" && <option value="allow">Allowlist</option>}
             <option value="block">Blocklist</option>
           </select>
         </Field>
-        <Field label="Sender domain" hint="domain.com and *@domain.com are equivalent; either one applies to that domain and its subdomains.">
+        <Field label="Rule type" required>
+          <select
+            value={form.kind}
+            onChange={(e) => {
+              const kind = e.target.value as Form["kind"];
+              setForm({ ...form, kind, action: kind === "ip" ? "block" : form.action, sender: "" });
+            }}
+            className="block w-full rounded border border-border bg-surface px-3 py-2 text-fg"
+          >
+            <option value="email">Exact email address</option>
+            <option value="domain">Verified sender domain</option>
+            <option value="ip">Source IP or CIDR (block only)</option>
+          </select>
+        </Field>
+        <Field label={form.kind === "email" ? "Sender email" : form.kind === "ip" ? "Source IP or CIDR" : "Sender domain"} hint={form.kind === "domain" ? "domain.com applies to that domain and its subdomains." : undefined}>
           <Input
-            value={form.sender_domain}
-            onChange={(e) => setForm({ ...form, sender_domain: e.target.value.trim().toLowerCase() })}
-            placeholder="lifelovelupus.com or *@lifelovelupus.com"
+            value={form.sender}
+            onChange={(e) => setForm({ ...form, sender: e.target.value.trim().toLowerCase() })}
+            placeholder={form.kind === "email" ? "sender@example.com" : form.kind === "ip" ? "192.0.2.44 or 192.0.2.0/24" : "example.com"}
             required
           />
         </Field>
@@ -349,11 +388,12 @@ function SenderListModal({
             required
           >
             {canManageSystem && <option value="system">System-wide</option>}
-            <option value="domain">One protected domain</option>
-            <option value="org">Whole organization</option>
+            {canManageAdmin && <option value="domain">One protected domain</option>}
+            {canManageAdmin && <option value="org">Whole organization</option>}
+            <option value="user">One mailbox</option>
           </select>
         </Field>
-        {form.scope !== "system" && (
+        {canManageAdmin && form.scope !== "system" && form.scope !== "user" && (
           <Field label="Organization" required>
             <select
               value={form.organization_id}
@@ -378,6 +418,18 @@ function SenderListModal({
               required
             >
               {filteredDomains.map((domain) => <option key={domain.id} value={domain.id}>{domain.name}</option>)}
+            </select>
+          </Field>
+        )}
+        {form.scope === "user" && (
+          <Field label="Mailbox" required>
+            <select
+              value={form.user_id}
+              onChange={(e) => setForm({ ...form, user_id: e.target.value })}
+              className="block w-full rounded border border-border bg-surface px-3 py-2 text-fg"
+              required
+            >
+              {(canManageAdmin ? users : currentUser ? [currentUser] : []).map((user) => <option key={user.id} value={user.id}>{user.email}</option>)}
             </select>
           </Field>
         )}

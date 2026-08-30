@@ -17,6 +17,7 @@ interface User {
   role: string;
   display_name?: string;
   is_active: boolean;
+  challenge_response_mode: "inherit" | "enabled" | "disabled";
   mfa_enrolled: boolean;
   last_login_at?: string;
 }
@@ -27,6 +28,7 @@ interface Form {
   display_name: string;
   role: string;
   is_active: boolean;
+  challenge_response_mode: "inherit" | "enabled" | "disabled";
   password: string;
 }
 
@@ -160,6 +162,7 @@ export function UsersPage() {
             display_name: "",
             role: "org_user",
             is_active: true,
+            challenge_response_mode: "inherit",
             password: "",
           }}
           onClose={() => setCreating(false)}
@@ -182,6 +185,7 @@ export function UsersPage() {
             display_name: editing.display_name ?? "",
             role: editing.role,
             is_active: editing.is_active,
+            challenge_response_mode: editing.challenge_response_mode,
             password: "",
           }}
           onClose={() => setEditing(null)}
@@ -275,6 +279,7 @@ function UserDetailsModal({
     ["Organization", organization],
     ["Role", user.role],
     ["Active", user.is_active ? "Yes" : "No"],
+    ["Challenge approval", challengeModeLabel(user.challenge_response_mode)],
     ["MFA", user.mfa_enrolled ? "Enrolled" : "Not enrolled"],
     ["Last sign-in", user.last_login_at ? new Date(user.last_login_at).toLocaleString() : "Never"],
     ["Processed", stats?.processed.toLocaleString() ?? "0"],
@@ -467,10 +472,27 @@ function UserModal({
             User can sign in
           </label>
         </Field>
+        <Field label="Challenge-response approval" hint="Override the organization or domain policy for this mailbox.">
+          <select
+            value={form.challenge_response_mode}
+            onChange={(e) => setForm({ ...form, challenge_response_mode: e.target.value as Form["challenge_response_mode"] })}
+            className="block w-full rounded border border-border bg-surface px-3 py-2 text-fg"
+          >
+            <option value="inherit">Inherit policy</option>
+            <option value="enabled">Enabled for this mailbox</option>
+            <option value="disabled">Disabled for this mailbox</option>
+          </select>
+        </Field>
         {err && <div role="alert" className="md:col-span-2 text-sm text-danger">{err}</div>}
       </form>
     </Modal>
   );
+}
+
+function challengeModeLabel(mode: User["challenge_response_mode"]) {
+  if (mode === "enabled") return "Enabled for mailbox";
+  if (mode === "disabled") return "Disabled for mailbox";
+  return "Inherit policy";
 }
 
 function PasswordModal({

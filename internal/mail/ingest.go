@@ -13,6 +13,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"sort"
 	"strings"
@@ -37,21 +38,22 @@ import (
 // Event is the payload Rspamd (via a small Lua snippet) POSTs after scanning.
 // Shape kept tight on purpose — anything richer goes in symbols.
 type Event struct {
-	Direction  string         `json:"direction"` // inbound | outbound
-	QueueID    string         `json:"queue_id,omitempty"`
-	MessageID  string         `json:"message_id,omitempty"`
-	From       string         `json:"from"`
-	FromName   string         `json:"from_display_name,omitempty"`
-	ReplyTo    string         `json:"reply_to,omitempty"`
-	To         []string       `json:"to"`
-	ClientIP   string         `json:"client_ip,omitempty"`
-	Helo       string         `json:"helo,omitempty"`
-	Subject    string         `json:"subject,omitempty"`
-	SizeBytes  int            `json:"size_bytes,omitempty"`
-	Score      float64        `json:"score"`
-	Action     string         `json:"action,omitempty"` // rspamd action: no action, add header, greylist, soft reject, reject
-	Symbols    map[string]any `json:"symbols,omitempty"`
-	StorageKey string         `json:"storage_key,omitempty"` // worker-supplied path for the .eml blob
+	Direction      string         `json:"direction"` // inbound | outbound
+	QueueID        string         `json:"queue_id,omitempty"`
+	MessageID      string         `json:"message_id,omitempty"`
+	From           string         `json:"from"`
+	FromName       string         `json:"from_display_name,omitempty"`
+	ReplyTo        string         `json:"reply_to,omitempty"`
+	To             []string       `json:"to"`
+	ClientIP       string         `json:"client_ip,omitempty"`
+	ClientHostname string         `json:"client_hostname,omitempty"`
+	Helo           string         `json:"helo,omitempty"`
+	Subject        string         `json:"subject,omitempty"`
+	SizeBytes      int            `json:"size_bytes,omitempty"`
+	Score          float64        `json:"score"`
+	Action         string         `json:"action,omitempty"` // rspamd action: no action, add header, greylist, soft reject, reject
+	Symbols        map[string]any `json:"symbols,omitempty"`
+	StorageKey     string         `json:"storage_key,omitempty"` // worker-supplied path for the .eml blob
 
 	// MVP 2 — fields that drive auto-triggered scans. All optional.
 	BodyText            string       `json:"body_text,omitempty"`
@@ -120,6 +122,7 @@ func (h *IngestHandler) handle(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteError(w, http.StatusInternalServerError, "policy resolve: "+err.Error())
 		return
 	}
+	challengeEnabled := h.challengeResponseEnabled(r.Context(), pol, orgID, ev.To[0])
 	brandProfiles := protectedBrandProfiles
 	if h.Brands != nil {
 		if profiles, loadErr := h.Brands.ProtectedProfiles(r.Context()); loadErr == nil && len(profiles) > 0 {
@@ -139,7 +142,7 @@ func (h *IngestHandler) handle(w http.ResponseWriter, r *http.Request) {
 	disposition, reason = applyDeliveryStatusNotificationDisposition(disposition, reason, &ev)
 	disposition, reason = applyAuthEnforcement(disposition, reason, &ev)
 	senderAction := ""
-	disposition, reason, senderAction, err = h.applySenderListDecision(r.Context(), disposition, reason, pol, orgID, domainID, &ev)
+	disposition, reason, senderAction, err = h.applySenderListDecision(r.Context(), disposition, reason, pol, challengeEnabled, orgID, domainID, &ev)
 	if err != nil {
 		httpx.WriteError(w, http.StatusInternalServerError, "sender policy lookup: "+err.Error())
 		return
@@ -150,16 +153,16 @@ func (h *IngestHandler) handle(w http.ResponseWriter, r *http.Request) {
 	disposition, reason = applyCommonScamDetectionWithPolicy(disposition, reason, pol, &ev)
 	disposition, reason = applyBrandImpersonationDetectionWithProfiles(disposition, reason, senderAction, pol, &ev, brandProfiles)
 	disposition, reason = applyThreatSignalDispositionWithPolicy(disposition, reason, pol, &ev)
-	disposition, reason = applySenderListAction(disposition, reason, senderAction, pol.SenderBlacklistEnabled())
-	disposition, reason = applyChallengeResponseHold(disposition, reason, pol, senderAction, &ev)
+	disposition, reason = applySenderListAction(disposition, reason, senderAction, pol.SenderBlacklistEnabled() || challengeEnabled)
+	disposition, reason = applyChallengeResponseHoldEnabled(disposition, reason, pol, senderAction, challengeEnabled, &ev)
 	if orgID != nil {
 		if learned, err := classifier.Lookup(r.Context(), h.DB, *orgID, ev.To[0], ev.From, ev.Subject); err == nil && learned != nil {
 			disposition, reason = applyLearnedClassification(disposition, reason, learned)
 		}
 	}
-	disposition, reason = applySenderListAction(disposition, reason, senderAction, pol.SenderBlacklistEnabled())
+	disposition, reason = applySenderListAction(disposition, reason, senderAction, pol.SenderBlacklistEnabled() || challengeEnabled)
 	disposition, reason = applyQuarantineFirst(disposition, reason, &ev)
-	senderResultAction := effectiveSenderListAction(senderAction, pol.SenderBlacklistEnabled())
+	senderResultAction := effectiveSenderListAction(senderAction, pol.SenderBlacklistEnabled() || challengeEnabled)
 	deepAnalysisState := "not_required"
 	var deepAnalysisDeadline *time.Time
 	if shouldHoldForDeepAnalysis(r.Context(), h.DB, disposition, &ev) {
@@ -212,15 +215,15 @@ func (h *IngestHandler) handle(w http.ResponseWriter, r *http.Request) {
 	err = h.DB.QueryRow(r.Context(), `
 		INSERT INTO mail_logs (organization_id, domain_id, campaign_id, campaign_copy_number,
 		                       queue_id, message_id, direction,
-		                       from_addr, to_addrs, client_ip, helo, subject, size_bytes,
+		                       from_addr, to_addrs, client_ip, client_hostname, helo, subject, size_bytes,
 		                       rspamd_score, rspamd_action, symbols, disposition, reason,
 		                       deep_analysis_state, deep_analysis_deadline, received_at)
 		VALUES ($1, $2, NULLIF($3, '00000000-0000-0000-0000-000000000000'::uuid), NULLIF($4,0),
-		        $5, $6, $7, $8, $9, NULLIF($10,'')::inet, $11, $12, $13,
-		        $14, $15, $16::jsonb, $17::mail_disposition, $18, $19, $20, now())
+		        $5, $6, $7, $8, $9, NULLIF($10,'')::inet, NULLIF($11,''), $12, $13, $14,
+		        $15, $16, $17::jsonb, $18::mail_disposition, $19, $20, $21, now())
 		RETURNING id
 	`, orgID, domainID, campaign.ID, campaign.MessageCount, ev.QueueID, ev.MessageID, ev.Direction,
-		ev.From, ev.To, ev.ClientIP, ev.Helo, ev.Subject, ev.SizeBytes,
+		ev.From, ev.To, ev.ClientIP, ev.ClientHostname, ev.Helo, ev.Subject, ev.SizeBytes,
 		ev.Score, ev.Action, symbolsJSON, disposition, reason, deepAnalysisState, deepAnalysisDeadline).Scan(&mailLogID)
 	if err != nil {
 		httpx.WriteError(w, http.StatusInternalServerError, "log insert: "+err.Error())
@@ -763,15 +766,15 @@ func isHardGateReason(reason string) bool {
 	}
 }
 
-func (h *IngestHandler) applySenderListDecision(ctx context.Context, disposition, reason string, pol *policies.Policy, orgID *uuid.UUID, domainID *uuid.UUID, ev *Event) (string, string, string, error) {
+func (h *IngestHandler) applySenderListDecision(ctx context.Context, disposition, reason string, pol *policies.Policy, challengeEnabled bool, orgID *uuid.UUID, domainID *uuid.UUID, ev *Event) (string, string, string, error) {
 	if pol == nil || orgID == nil || ev == nil || len(ev.To) == 0 {
 		return disposition, reason, "", nil
 	}
-	action, _, err := h.lookupSenderList(ctx, *orgID, domainID, strings.ToLower(strings.TrimSpace(ev.To[0])), ev.From, ev.ReplyTo)
+	action, _, err := h.lookupSenderListWithIP(ctx, *orgID, domainID, strings.ToLower(strings.TrimSpace(ev.To[0])), ev.ClientIP, ev.From, ev.ReplyTo)
 	if err != nil {
 		return disposition, reason, "", err
 	}
-	nextDisposition, nextReason := applySenderListAction(disposition, reason, action, pol.SenderBlacklistEnabled())
+	nextDisposition, nextReason := applySenderListAction(disposition, reason, action, pol.SenderBlacklistEnabled() || challengeEnabled)
 	return nextDisposition, nextReason, action, nil
 }
 
@@ -973,7 +976,11 @@ func firstNonEmpty(values ...string) string {
 }
 
 func applyChallengeResponseHold(disposition, reason string, pol *policies.Policy, senderAction string, ev *Event) (string, string) {
-	if disposition == "rejected" || disposition == "quarantined" || pol == nil || !pol.ChallengeResponseEnabled() {
+	return applyChallengeResponseHoldEnabled(disposition, reason, pol, senderAction, pol != nil && pol.ChallengeResponseEnabled(), ev)
+}
+
+func applyChallengeResponseHoldEnabled(disposition, reason string, pol *policies.Policy, senderAction string, enabled bool, ev *Event) (string, string) {
+	if disposition == "rejected" || disposition == "quarantined" || pol == nil || !enabled {
 		return disposition, reason
 	}
 	if ev == nil || !strings.EqualFold(ev.Direction, "inbound") {
@@ -982,10 +989,58 @@ func applyChallengeResponseHold(disposition, reason string, pol *policies.Policy
 	if isDeliveryStatusNotification(ev) {
 		return disposition, reason
 	}
-	if senderAction == "allow" {
+	if senderAction == "allow" && (!pol.ChallengeResponseRequireVerifiedSource() || challengeSourceVerified(ev)) {
 		return disposition, reason
 	}
 	return "quarantined", challenge.ReasonPendingApproval
+}
+
+func (h *IngestHandler) challengeResponseEnabled(ctx context.Context, pol *policies.Policy, orgID *uuid.UUID, recipient string) bool {
+	if pol == nil {
+		return false
+	}
+	enabled := pol.ChallengeResponseEnabled()
+	if h == nil || h.DB == nil || orgID == nil {
+		return enabled
+	}
+	var mode string
+	err := h.DB.QueryRow(ctx, `
+		SELECT challenge_response_mode
+		  FROM users
+		 WHERE organization_id = $1
+		   AND lower(email::text) = lower($2)
+		   AND is_active = true
+		 LIMIT 1
+	`, *orgID, strings.TrimSpace(recipient)).Scan(&mode)
+	if err != nil {
+		return enabled
+	}
+	switch mode {
+	case "enabled":
+		return true
+	case "disabled":
+		return false
+	default:
+		return enabled
+	}
+}
+
+func challengeSourceVerified(ev *Event) bool {
+	if ev == nil {
+		return false
+	}
+	auth := authSignals(ev)
+	if !auth.DMARCPass || (!auth.SPFPass && !auth.DKIMPass) {
+		return false
+	}
+	hostname := strings.ToLower(strings.Trim(strings.TrimSpace(ev.ClientHostname), "."))
+	if hostname == "" || hostname == "unknown" || hostname == "localhost" || strings.HasPrefix(hostname, "[") {
+		return false
+	}
+	if _, err := netip.ParseAddr(hostname); err == nil {
+		return false
+	}
+	return strings.Contains(hostname, ".")
 }
 
 func isDeliveryStatusNotification(ev *Event) bool {

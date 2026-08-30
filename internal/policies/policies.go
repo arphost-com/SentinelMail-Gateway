@@ -42,6 +42,10 @@ func (p *Policy) ChallengeResponseEnabled() bool {
 	return p.boolSetting("challenge_response_enabled", false)
 }
 
+func (p *Policy) ChallengeResponseRequireVerifiedSource() bool {
+	return p.boolSetting("challenge_response_require_verified_source", true)
+}
+
 func (p *Policy) BrandImpersonationEnabled() bool {
 	return p.boolSetting("brand_impersonation_enabled", true)
 }

@@ -1335,8 +1335,8 @@ func (h *Handler) insertBlockEntry(ctx context.Context, e *Entry, entryScope str
 	note := quarantineBlockNote(e, ident, verdict)
 	var id uuid.UUID
 	err := h.DB.QueryRow(ctx, `
-		INSERT INTO list_entries (organization_id, domain_id, user_id, scope, action, pattern, note)
-		SELECT $1, NULL, $2, $3::listentry_scope, 'block'::listentry_action, $4, $5
+		INSERT INTO list_entries (organization_id, domain_id, user_id, scope, action, kind, pattern, note)
+		SELECT $1, NULL, $2, $3::listentry_scope, 'block'::listentry_action, 'email'::listentry_kind, $4, $5
 		 WHERE NOT EXISTS (
 			SELECT 1
 			  FROM list_entries
@@ -1345,6 +1345,7 @@ func (h *Handler) insertBlockEntry(ctx context.Context, e *Entry, entryScope str
 			   AND user_id IS NOT DISTINCT FROM $2
 			   AND scope = $3::listentry_scope
 			   AND action = 'block'::listentry_action
+			   AND kind = 'email'::listentry_kind
 			   AND lower(pattern) = lower($4)
 		 )
 		RETURNING id
@@ -1407,7 +1408,7 @@ func (h *Handler) finishSenderBlock(ctx context.Context, e *Entry, sender string
 }
 
 func (h *Handler) recordChallengeApproval(ctx context.Context, e *Entry, ident *auth.Identity) error {
-	if ident == nil || ident.Role != "org_user" || !canEndUserAct(ident, e) || e.MailLogID == nil {
+	if ident == nil || e == nil || e.MailLogID == nil {
 		return nil
 	}
 	var reason string
@@ -1421,7 +1422,22 @@ func (h *Handler) recordChallengeApproval(ctx context.Context, e *Entry, ident *
 	if e.FromAddr != nil {
 		from = *e.FromAddr
 	}
-	return senderlists.UpsertUserDecision(ctx, h.DB, e.OrganizationID, e.DomainID, ident.UserID, e.ToAddr, from, "allow", "Challenge-response approved from quarantine")
+	userID := ident.UserID
+	if ident.Role == "org_user" {
+		if !canEndUserAct(ident, e) {
+			return nil
+		}
+	} else if err := h.DB.QueryRow(ctx, `
+		SELECT id FROM users
+		 WHERE organization_id = $1 AND lower(email::text) = lower($2) AND is_active = true
+		 LIMIT 1
+	`, e.OrganizationID, e.ToAddr).Scan(&userID); err != nil {
+		if err == pgx.ErrNoRows {
+			return nil
+		}
+		return err
+	}
+	return senderlists.UpsertUserDecision(ctx, h.DB, e.OrganizationID, e.DomainID, userID, e.ToAddr, from, "allow", "Challenge-response approved from quarantine")
 }
 
 func (h *Handler) recordQuarantineClassification(ctx context.Context, e *Entry, sender string, ident *auth.Identity, verdict string) error {

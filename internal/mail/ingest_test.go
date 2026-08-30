@@ -1312,10 +1312,29 @@ func TestChallengeResponseHoldsUnknownInboundSender(t *testing.T) {
 
 func TestChallengeResponseSkipsAllowedSender(t *testing.T) {
 	pol := &policies.Policy{Settings: map[string]any{"challenge_response_enabled": true}}
-	ev := &Event{Direction: "inbound", From: "sender@example.net", To: []string{"user@example.com"}}
+	ev := &Event{
+		Direction: "inbound", From: "sender@example.net", To: []string{"user@example.com"},
+		ClientHostname: "mail.example.net",
+		Symbols:        map[string]any{"DMARC_POLICY_ALLOW": true, "R_SPF_ALLOW": true},
+	}
 	got, reason := applyChallengeResponseHold("delivered", "", pol, "allow", ev)
 	if got != "delivered" || reason != "" {
 		t.Fatalf("allowed sender changed to %q/%q", got, reason)
+	}
+}
+
+func TestChallengeResponseHoldsAllowedSenderWithoutVerifiedSource(t *testing.T) {
+	pol := &policies.Policy{Settings: map[string]any{"challenge_response_enabled": true}}
+	tests := []Event{
+		{Direction: "inbound", ClientHostname: "mail.example.net", Symbols: map[string]any{"R_SPF_ALLOW": true}},
+		{Direction: "inbound", ClientHostname: "mail.example.net", Symbols: map[string]any{"DMARC_POLICY_ALLOW": true}},
+		{Direction: "inbound", Symbols: map[string]any{"DMARC_POLICY_ALLOW": true, "R_DKIM_ALLOW": true}},
+	}
+	for _, ev := range tests {
+		got, reason := applyChallengeResponseHold("delivered", "", pol, "allow", &ev)
+		if got != "quarantined" || reason != challenge.ReasonPendingApproval {
+			t.Fatalf("unverified allow changed to %q/%q", got, reason)
+		}
 	}
 }
 
