@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -455,6 +456,10 @@ func (h *Handler) release(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := h.recordChallengeApproval(r.Context(), &e, ident); err != nil {
+		if errors.Is(err, errInactiveChallengeRecipient) {
+			httpx.WriteError(w, http.StatusConflict, err.Error())
+			return
+		}
 		httpx.WriteError(w, http.StatusInternalServerError, "sender approval failed")
 		return
 	}
@@ -1407,6 +1412,8 @@ func (h *Handler) finishSenderBlock(ctx context.Context, e *Entry, sender string
 	return h.recordQuarantineVerdict(ctx, e, ident, verdict)
 }
 
+var errInactiveChallengeRecipient = errors.New("recipient account is inactive; activate it before approving mail")
+
 func (h *Handler) recordChallengeApproval(ctx context.Context, e *Entry, ident *auth.Identity) error {
 	if ident == nil || e == nil || e.MailLogID == nil {
 		return nil
@@ -1427,15 +1434,21 @@ func (h *Handler) recordChallengeApproval(ctx context.Context, e *Entry, ident *
 		if !canEndUserAct(ident, e) {
 			return nil
 		}
-	} else if err := h.DB.QueryRow(ctx, `
-		SELECT id FROM users
-		 WHERE organization_id = $1 AND lower(email::text) = lower($2) AND is_active = true
+	} else {
+		var active bool
+		if err := h.DB.QueryRow(ctx, `
+		SELECT id, is_active FROM users
+		 WHERE organization_id = $1 AND lower(email::text) = lower($2)
 		 LIMIT 1
-	`, e.OrganizationID, e.ToAddr).Scan(&userID); err != nil {
-		if err == pgx.ErrNoRows {
-			return nil
+	`, e.OrganizationID, e.ToAddr).Scan(&userID, &active); err != nil {
+			if err == pgx.ErrNoRows {
+				return nil
+			}
+			return err
 		}
-		return err
+		if !active {
+			return errInactiveChallengeRecipient
+		}
 	}
 	return senderlists.UpsertUserDecision(ctx, h.DB, e.OrganizationID, e.DomainID, userID, e.ToAddr, from, "allow", "Challenge-response approved from quarantine")
 }

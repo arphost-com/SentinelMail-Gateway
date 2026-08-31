@@ -14,6 +14,7 @@ interface UserSelf {
   role: string;
   mfa_enrolled: boolean;
   phishing_alert_frequency: "off" | "immediate" | "daily" | "weekly";
+  challenge_response_alert_frequency: "immediate" | "hourly" | "daily";
   bulk_completion_notification: "email" | "in_app" | "both" | "off";
 }
 
@@ -48,6 +49,11 @@ export function AccountTab() {
         frequency={self.data?.phishing_alert_frequency ?? "weekly"}
         refetch={() => self.refetch()}
       />
+      <ChallengeApprovalAlertsCard
+        userId={me?.user_id}
+        frequency={self.data?.challenge_response_alert_frequency ?? "immediate"}
+        refetch={() => self.refetch()}
+      />
       <BackgroundCompletionCard
         userId={me?.user_id}
         preference={self.data?.bulk_completion_notification ?? "email"}
@@ -56,6 +62,62 @@ export function AccountTab() {
       <PasswordCard userId={me?.user_id} />
       <MFACard enrolled={self.data?.mfa_enrolled ?? false} loading={self.isLoading} refetch={() => self.refetch()} />
     </div>
+  );
+}
+
+function ChallengeApprovalAlertsCard({
+  userId,
+  frequency,
+  refetch,
+}: {
+  userId: string | undefined;
+  frequency: UserSelf["challenge_response_alert_frequency"];
+  refetch: () => void;
+}) {
+  const [value, setValue] = useState(frequency);
+  const [err, setErr] = useState<string | null>(null);
+  const [ok, setOk] = useState(false);
+  const qc = useQueryClient();
+
+  useEffect(() => setValue(frequency), [frequency]);
+  const change = useMutation({
+    mutationFn: (next: UserSelf["challenge_response_alert_frequency"]) =>
+      api.patch(`/users/${userId}`, { challenge_response_alert_frequency: next }),
+    onSuccess: () => {
+      setOk(true);
+      setErr(null);
+      qc.invalidateQueries({ queryKey: ["self"] });
+      refetch();
+    },
+    onError: (e) => {
+      setOk(false);
+      setErr(e instanceof ApiError ? e.message : String(e));
+    },
+  });
+
+  return (
+    <Card>
+      <CardHeader><CardTitle>Held-mail approval alerts</CardTitle></CardHeader>
+      <CardBody>
+        <form onSubmit={(event) => { event.preventDefault(); if (userId) change.mutate(value); }} className="flex flex-col gap-3 max-w-sm">
+          <Field label="Approval email frequency" help="Sent only for mail waiting for your approval. Already blocked sender, domain, or IP rules remain silently blocked and logged.">
+            <select
+              className="block w-full rounded border border-border bg-surface px-3 py-2 text-fg focus:border-accent"
+              value={value}
+              onChange={(event) => { setOk(false); setErr(null); setValue(event.target.value as UserSelf["challenge_response_alert_frequency"]); }}
+            >
+              <option value="immediate">Immediately</option>
+              <option value="hourly">Hourly digest</option>
+              <option value="daily">Daily digest</option>
+            </select>
+          </Field>
+          <p className="text-sm text-subtle">Organization administrators receive the pending approvals for all active mailboxes they manage. Inactive accounts receive no alerts and cannot approve mail.</p>
+          {err && <div role="alert" className="text-sm text-danger">{err}</div>}
+          {ok && <div role="status" className="text-sm text-success">Approval alert preference updated.</div>}
+          <div><Button type="submit" disabled={change.isPending || value === frequency}>{change.isPending ? "Saving…" : "Save approval alerts"}</Button></div>
+        </form>
+      </CardBody>
+    </Card>
   );
 }
 

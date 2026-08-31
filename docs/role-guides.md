@@ -25,6 +25,7 @@ What you can do:
 - Release a message if it is safe.
 - Delete a quarantined message if it is junk.
 - See your own mail logs and audit activity.
+- Choose immediate, hourly, or daily email notices for mail waiting for your approval.
 
 What you cannot do:
 
@@ -50,6 +51,7 @@ What you can do:
 - Manage policies for spam thresholds, quarantine thresholds, reject thresholds, greylisting, and DMARC behavior.
 - Create users in your organization.
 - Reset passwords and disable user accounts.
+- Set mailbox-specific challenge approval and approval-notice cadence; inactive users receive no notices and cannot approve releases.
 - View quarantine, mail logs, reports, threats, SMTP events, and audit entries for your organization.
 
 First setup checklist:

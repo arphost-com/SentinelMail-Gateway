@@ -16,6 +16,8 @@ interface SenderListEntry {
   id: string;
   organization_id?: string;
   domain_id?: string;
+  user_id?: string;
+  user_email?: string;
   scope: "system" | "org" | "domain" | "user";
   action: "allow" | "block";
   kind: "email" | "domain" | "ip";
@@ -79,13 +81,17 @@ export function SenderListsPage() {
   const [creating, setCreating] = useState(false);
   const [search, setSearch] = useState("");
   const [action, setAction] = useState("");
+  const [entryScope, setEntryScope] = useState("");
+  const [userId, setUserId] = useState("");
 
   const params = new URLSearchParams({ limit: "200" });
   if (search) params.set("q", search);
   if (action) params.set("action", action);
+  if (entryScope) params.set("scope", entryScope);
+  if (userId) params.set("user_id", userId);
 
   const entries = useQuery({
-    queryKey: ["sender-lists", search, action],
+    queryKey: ["sender-lists", search, action, entryScope, userId],
     queryFn: () => api.get<ListResponse<SenderListEntry>>(`/sender-lists?${params.toString()}`),
   });
   const domains = useQuery({
@@ -142,7 +148,7 @@ export function SenderListsPage() {
   const columns: ColumnDef<SenderListEntry>[] = [
     { key: "action", header: "List", width: 12, sortValue: (e) => e.action, render: (e) => e.action === "allow" ? "Allowlist" : "Blocklist" },
     { key: "sender", header: "Sender / source", width: 24, sortValue: (e) => e.sender, render: (e) => <strong>{e.sender}</strong> },
-    { key: "scope", header: "Applies to", width: 26, sortValue: (e) => `${e.scope}:${domainName(e.domain_id)}`, render: (e) => scopeLabel(e, orgName, domainName) },
+    { key: "scope", header: "Applies to", width: 26, sortValue: (e) => `${e.scope}:${e.user_email ?? domainName(e.domain_id)}`, render: (e) => scopeLabel(e, orgName, domainName) },
     { key: "blocked", header: "Blocked", width: 10, className: "text-right tabular-nums", sortValue: (e) => e.blocked_count, render: (e) => e.action === "block" ? e.blocked_count.toLocaleString() : "—" },
     { key: "note", header: "Note", width: 24, sortValue: (e) => e.note ?? "", render: (e) => <span className="block truncate" title={e.note}>{e.note || "-"}</span> },
     { key: "created", header: "Created", width: 14, sortValue: (e) => e.created_at, render: (e) => new Date(e.created_at).toLocaleDateString() },
@@ -208,6 +214,16 @@ export function SenderListsPage() {
             <option value="block">Blocklist</option>
           </select>
         </Field>
+        <Field label="Scope">
+          <select value={entryScope} onChange={(e) => { setEntryScope(e.target.value); if (e.target.value !== "user") setUserId(""); }} className="block w-full rounded border border-border bg-surface px-3 py-2 text-fg">
+            <option value="">All scopes</option><option value="system">System</option><option value="org">Organization</option><option value="domain">Domain</option><option value="user">Mailbox</option>
+          </select>
+        </Field>
+        {canManageAdmin && entryScope === "user" && <Field label="Mailbox">
+          <select value={userId} onChange={(e) => setUserId(e.target.value)} className="block w-full rounded border border-border bg-surface px-3 py-2 text-fg">
+            <option value="">All mailboxes</option>{(users.data?.items ?? []).map((user) => <option key={user.id} value={user.id}>{user.email}</option>)}
+          </select>
+        </Field>}
       </div>
 
       <DataTable
@@ -222,9 +238,9 @@ export function SenderListsPage() {
               size="sm"
               variant="danger"
               disabled={remove.isPending}
-              onClick={() => confirmDanger(`Remove ${entry.sender} from the ${entry.action}list?`) && remove.mutate(entry.id)}
+              onClick={() => confirmDanger(`Undo this ${entry.action} rule for ${entry.sender}? Future mail will return to normal policy evaluation.`) && remove.mutate(entry.id)}
             >
-              Remove
+              {entry.action === "allow" ? "Undo allow" : "Undo block"}
             </Button>
           ) : undefined}
       />
@@ -457,6 +473,6 @@ function normalizeSenderDomain(value: string) {
 function scopeLabel(entry: SenderListEntry, orgName: (id?: string) => string, domainName: (id?: string) => string) {
   if (entry.scope === "system") return "System-wide";
   if (entry.scope === "domain") return domainName(entry.domain_id);
-  if (entry.scope === "user") return "User-specific";
+  if (entry.scope === "user") return entry.user_email ? `Mailbox: ${entry.user_email}` : "Mailbox-specific";
   return `${orgName(entry.organization_id)} org`;
 }

@@ -1,7 +1,7 @@
 {
   "name": "sentinelmail-web",
   "private": true,
-  "version": "0.1.29",
+  "version": "0.1.35",
   "type": "module",
   "scripts": {
     "dev": "vite",

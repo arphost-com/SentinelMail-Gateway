@@ -21,6 +21,7 @@ import (
 	"github.com/arphost/sentinelmail-gateway/internal/config"
 	"github.com/arphost/sentinelmail-gateway/internal/db"
 	"github.com/arphost/sentinelmail-gateway/internal/httpapi"
+	"github.com/arphost/sentinelmail-gateway/internal/notifications"
 	"github.com/arphost/sentinelmail-gateway/internal/scan"
 	"github.com/arphost/sentinelmail-gateway/internal/threatfeed"
 )
@@ -102,6 +103,7 @@ func serve() error {
 
 	startMessageRetentionPurgeLoop(ctx, log, pool)
 	startDeepAnalysisTimeoutLoop(ctx, log, pool)
+	startChallengeResponseDigestLoop(ctx, log, pool)
 
 	// In prod we expect to sit behind TLS termination (nginx/web container or external LB).
 	// Honor X-Forwarded-Proto via middleware.RealIP; mark cookies Secure unless explicit dev.
@@ -131,6 +133,28 @@ func serve() error {
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	return srv.Shutdown(shutdownCtx)
+}
+
+func startChallengeResponseDigestLoop(ctx context.Context, log *slog.Logger, pool *pgxpool.Pool) {
+	go func() {
+		ticker := time.NewTicker(time.Minute)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				runCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+				sent, err := notifications.RunChallengeResponseDigests(runCtx, pool)
+				cancel()
+				if err != nil {
+					log.Warn("challenge_response.digest_failed", slog.String("error", err.Error()))
+				} else if sent > 0 {
+					log.Info("challenge_response.digest_sent", slog.Int("recipients", sent))
+				}
+			}
+		}
+	}()
 }
 
 func startDeepAnalysisTimeoutLoop(ctx context.Context, log *slog.Logger, pool *pgxpool.Pool) {

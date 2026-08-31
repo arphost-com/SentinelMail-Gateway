@@ -31,6 +31,7 @@ type Entry struct {
 	OrganizationID *uuid.UUID `json:"organization_id,omitempty"`
 	DomainID       *uuid.UUID `json:"domain_id,omitempty"`
 	UserID         *uuid.UUID `json:"user_id,omitempty"`
+	UserEmail      string     `json:"user_email,omitempty"`
 	Scope          string     `json:"scope"`
 	Action         string     `json:"action"`
 	Kind           string     `json:"kind"`
@@ -47,7 +48,7 @@ func entryCols(alias string) string {
 	if alias != "" {
 		prefix = alias + "."
 	}
-	return prefix + `id, ` + prefix + `organization_id, ` + prefix + `domain_id, ` + prefix + `user_id, ` + prefix + `scope::text, ` + prefix + `action::text, ` + prefix + `kind::text,
+	return prefix + `id, ` + prefix + `organization_id, ` + prefix + `domain_id, ` + prefix + `user_id, COALESCE((SELECT u.email::text FROM users u WHERE u.id = ` + prefix + `user_id), ''), ` + prefix + `scope::text, ` + prefix + `action::text, ` + prefix + `kind::text,
                    ` + prefix + `pattern, COALESCE(` + prefix + `note, ''), ` + blockedCountExpr(alias) + `, ` + prefix + `created_at`
 }
 
@@ -318,6 +319,23 @@ func (h *Handler) list(w http.ResponseWriter, r *http.Request) {
 		args = append(args, action)
 		clauses = append(clauses, fmt.Sprintf("le.action = $%d::listentry_action", len(args)))
 	}
+	if entryScope := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("scope"))); entryScope != "" {
+		if entryScope != "system" && entryScope != "org" && entryScope != "domain" && entryScope != "user" {
+			httpx.WriteError(w, http.StatusBadRequest, "scope must be system, org, domain, or user")
+			return
+		}
+		args = append(args, entryScope)
+		clauses = append(clauses, fmt.Sprintf("le.scope = $%d::listentry_scope", len(args)))
+	}
+	if userIDRaw := strings.TrimSpace(r.URL.Query().Get("user_id")); userIDRaw != "" {
+		userID, err := uuid.Parse(userIDRaw)
+		if err != nil {
+			httpx.WriteError(w, http.StatusBadRequest, "invalid user_id")
+			return
+		}
+		args = append(args, userID)
+		clauses = append(clauses, fmt.Sprintf("le.user_id = $%d", len(args)))
+	}
 	if domainIDRaw := strings.TrimSpace(r.URL.Query().Get("domain_id")); domainIDRaw != "" {
 		domainID, err := uuid.Parse(domainIDRaw)
 		if err != nil {
@@ -329,7 +347,7 @@ func (h *Handler) list(w http.ResponseWriter, r *http.Request) {
 	}
 	if search := strings.TrimSpace(r.URL.Query().Get("q")); search != "" {
 		args = append(args, "%"+strings.ToLower(search)+"%")
-		clauses = append(clauses, fmt.Sprintf("(lower(le.pattern) LIKE $%d OR lower(COALESCE(le.note, '')) LIKE $%d)", len(args), len(args)))
+		clauses = append(clauses, fmt.Sprintf("(lower(le.pattern) LIKE $%d OR lower(COALESCE(le.note, '')) LIKE $%d OR EXISTS (SELECT 1 FROM users u WHERE u.id = le.user_id AND lower(u.email::text) LIKE $%d))", len(args), len(args), len(args)))
 	}
 	where := ""
 	if len(clauses) > 0 {
@@ -535,7 +553,7 @@ func scanEntry(row pgx.Row, entry *Entry) error {
 	var orgID pgtype.UUID
 	var domainID pgtype.UUID
 	var userID pgtype.UUID
-	if err := row.Scan(&id, &orgID, &domainID, &userID, &entry.Scope, &entry.Action, &entry.Kind, &entry.Pattern, &entry.Note, &entry.BlockedCount, &entry.CreatedAt); err != nil {
+	if err := row.Scan(&id, &orgID, &domainID, &userID, &entry.UserEmail, &entry.Scope, &entry.Action, &entry.Kind, &entry.Pattern, &entry.Note, &entry.BlockedCount, &entry.CreatedAt); err != nil {
 		return err
 	}
 	if !id.Valid {

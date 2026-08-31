@@ -1310,6 +1310,28 @@ func TestChallengeResponseHoldsUnknownInboundSender(t *testing.T) {
 	}
 }
 
+func TestChallengeResponseNotifiesUnknownSenderWithMissingAuthentication(t *testing.T) {
+	pol := &policies.Policy{Settings: map[string]any{"challenge_response_enabled": true}}
+	ev := &Event{Direction: "inbound", From: "sender@example.net", To: []string{"user@example.com"}}
+	got, reason := applyChallengeResponseHold("quarantined", "sender authentication results missing", pol, "", ev)
+	if got != "quarantined" || reason != challenge.ReasonPendingApproval {
+		t.Fatalf("missing-auth unknown sender changed to %q/%q, want pending approval", got, reason)
+	}
+}
+
+func TestChallengeResponseDoesNotOfferDetectedPhishingForApproval(t *testing.T) {
+	pol := &policies.Policy{Settings: map[string]any{"challenge_response_enabled": true}}
+	ev := &Event{
+		Direction: "inbound", From: "attacker@example.net", To: []string{"user@example.com"},
+		Subject:  "Wallet access verification required",
+		BodyText: "Verify your wallet seed phrase immediately to restore access.",
+	}
+	got, reason := applyChallengeResponseHold("quarantined", "sender authentication results missing", pol, "", ev)
+	if got != "quarantined" || reason != "sender authentication results missing" {
+		t.Fatalf("detected phishing changed to %q/%q", got, reason)
+	}
+}
+
 func TestChallengeResponseSkipsAllowedSender(t *testing.T) {
 	pol := &policies.Policy{Settings: map[string]any{"challenge_response_enabled": true}}
 	ev := &Event{
@@ -1352,6 +1374,18 @@ func TestChallengeResponseSkipsDeliveryStatusNotification(t *testing.T) {
 	got, reason := applyChallengeResponseHold("delivered", "", pol, "", deliveryStatusNotificationEvent())
 	if got != "delivered" || reason != "" {
 		t.Fatalf("delivery status notification changed to %q/%q, want delivered/empty", got, reason)
+	}
+}
+
+func TestChallengeResponseModeEnabledForInactiveMailbox(t *testing.T) {
+	if !challengeResponseModeEnabled(true, "disabled", false) {
+		t.Fatal("inactive mailbox must not bypass an enabled organization policy")
+	}
+	if challengeResponseModeEnabled(false, "enabled", false) {
+		t.Fatal("inactive mailbox override must not enable a disabled organization policy")
+	}
+	if challengeResponseModeEnabled(true, "disabled", true) {
+		t.Fatal("active mailbox disabled override was ignored")
 	}
 }
 

@@ -18,6 +18,7 @@ interface User {
   display_name?: string;
   is_active: boolean;
   challenge_response_mode: "inherit" | "enabled" | "disabled";
+  challenge_response_alert_frequency: "immediate" | "hourly" | "daily";
   mfa_enrolled: boolean;
   last_login_at?: string;
 }
@@ -29,6 +30,7 @@ interface Form {
   role: string;
   is_active: boolean;
   challenge_response_mode: "inherit" | "enabled" | "disabled";
+  challenge_response_alert_frequency: "immediate" | "hourly" | "daily";
   password: string;
 }
 
@@ -163,6 +165,7 @@ export function UsersPage() {
             role: "org_user",
             is_active: true,
             challenge_response_mode: "inherit",
+            challenge_response_alert_frequency: "immediate",
             password: "",
           }}
           onClose={() => setCreating(false)}
@@ -186,6 +189,7 @@ export function UsersPage() {
             role: editing.role,
             is_active: editing.is_active,
             challenge_response_mode: editing.challenge_response_mode,
+            challenge_response_alert_frequency: editing.challenge_response_alert_frequency,
             password: "",
           }}
           onClose={() => setEditing(null)}
@@ -280,6 +284,7 @@ function UserDetailsModal({
     ["Role", user.role],
     ["Active", user.is_active ? "Yes" : "No"],
     ["Challenge approval", challengeModeLabel(user.challenge_response_mode)],
+    ["Approval alerts", challengeAlertLabel(user.challenge_response_alert_frequency)],
     ["MFA", user.mfa_enrolled ? "Enrolled" : "Not enrolled"],
     ["Last sign-in", user.last_login_at ? new Date(user.last_login_at).toLocaleString() : "Never"],
     ["Processed", stats?.processed.toLocaleString() ?? "0"],
@@ -483,6 +488,17 @@ function UserModal({
             <option value="disabled">Disabled for this mailbox</option>
           </select>
         </Field>
+        <Field label="Approval alert frequency" hint="Email this active user when held mail is waiting for approval. Blocked sources never generate an approval alert.">
+          <select
+            value={form.challenge_response_alert_frequency}
+            onChange={(e) => setForm({ ...form, challenge_response_alert_frequency: e.target.value as Form["challenge_response_alert_frequency"] })}
+            className="block w-full rounded border border-border bg-surface px-3 py-2 text-fg"
+          >
+            <option value="immediate">Immediately</option>
+            <option value="hourly">Hourly digest</option>
+            <option value="daily">Daily digest</option>
+          </select>
+        </Field>
         {err && <div role="alert" className="md:col-span-2 text-sm text-danger">{err}</div>}
       </form>
     </Modal>
@@ -493,6 +509,12 @@ function challengeModeLabel(mode: User["challenge_response_mode"]) {
   if (mode === "enabled") return "Enabled for mailbox";
   if (mode === "disabled") return "Disabled for mailbox";
   return "Inherit policy";
+}
+
+function challengeAlertLabel(frequency: User["challenge_response_alert_frequency"]) {
+  if (frequency === "hourly") return "Hourly digest";
+  if (frequency === "daily") return "Daily digest";
+  return "Immediate";
 }
 
 function PasswordModal({

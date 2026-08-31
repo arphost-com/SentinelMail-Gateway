@@ -980,7 +980,7 @@ func applyChallengeResponseHold(disposition, reason string, pol *policies.Policy
 }
 
 func applyChallengeResponseHoldEnabled(disposition, reason string, pol *policies.Policy, senderAction string, enabled bool, ev *Event) (string, string) {
-	if disposition == "rejected" || disposition == "quarantined" || pol == nil || !enabled {
+	if disposition == "rejected" || pol == nil || !enabled {
 		return disposition, reason
 	}
 	if ev == nil || !strings.EqualFold(ev.Direction, "inbound") {
@@ -989,10 +989,33 @@ func applyChallengeResponseHoldEnabled(disposition, reason string, pol *policies
 	if isDeliveryStatusNotification(ev) {
 		return disposition, reason
 	}
+	if disposition == "quarantined" && !challengeCanRequestApproval(reason, pol, ev) {
+		return disposition, reason
+	}
 	if senderAction == "allow" && (!pol.ChallengeResponseRequireVerifiedSource() || challengeSourceVerified(ev)) {
 		return disposition, reason
 	}
 	return "quarantined", challenge.ReasonPendingApproval
+}
+
+func challengeCanRequestApproval(reason string, pol *policies.Policy, ev *Event) bool {
+	// Authentication failure is useful evidence and remains visible in the
+	// stored symbols, but it is not an existing sender/domain/IP block. In
+	// strict challenge mode the user must therefore be notified that the
+	// unknown sender is waiting for approval. Never convert malware, phishing,
+	// or other threat classifications into an approval request.
+	authQuarantine := reason == "sender authentication results missing" ||
+		strings.HasPrefix(reason, "sender failed DMARC") ||
+		strings.HasPrefix(reason, "sender failed SPF/DKIM") ||
+		strings.HasPrefix(reason, "sender authentication")
+	if !authQuarantine || ev == nil {
+		return false
+	}
+	if threat := classifyThreat(ev); threat == "PHISHING" || threat == "VIRUS" || threat == "MALWARE" {
+		return false
+	}
+	analysis := classifier.AnalyzeCommonScam(ev.Subject, ev.BodyText)
+	return analysis.EmailType == "" || !commonScamDetectionAllows(pol, analysis.EmailType)
 }
 
 func (h *IngestHandler) challengeResponseEnabled(ctx context.Context, pol *policies.Policy, orgID *uuid.UUID, recipient string) bool {
@@ -1004,16 +1027,26 @@ func (h *IngestHandler) challengeResponseEnabled(ctx context.Context, pol *polic
 		return enabled
 	}
 	var mode string
+	var active bool
 	err := h.DB.QueryRow(ctx, `
-		SELECT challenge_response_mode
+		SELECT challenge_response_mode, is_active
 		  FROM users
 		 WHERE organization_id = $1
 		   AND lower(email::text) = lower($2)
-		   AND is_active = true
 		 LIMIT 1
-	`, *orgID, strings.TrimSpace(recipient)).Scan(&mode)
+	`, *orgID, strings.TrimSpace(recipient)).Scan(&mode, &active)
 	if err != nil {
 		return enabled
+	}
+	return challengeResponseModeEnabled(enabled, mode, active)
+}
+
+func challengeResponseModeEnabled(policyEnabled bool, mode string, active bool) bool {
+	// Deactivated mailboxes cannot silently bypass an organization-wide
+	// allowlist-first policy. They remain held and visible to active admins,
+	// but receive no approval digest and cannot approve a release.
+	if !active {
+		return policyEnabled
 	}
 	switch mode {
 	case "enabled":
@@ -1021,7 +1054,7 @@ func (h *IngestHandler) challengeResponseEnabled(ctx context.Context, pol *polic
 	case "disabled":
 		return false
 	default:
-		return enabled
+		return policyEnabled
 	}
 }
 

@@ -20,28 +20,31 @@ import (
 )
 
 type User struct {
-	ID                     uuid.UUID  `json:"id"`
-	OrganizationID         uuid.UUID  `json:"organization_id"`
-	Email                  string     `json:"email"`
-	Role                   string     `json:"role"`
-	DisplayName            *string    `json:"display_name,omitempty"`
-	IsActive               bool       `json:"is_active"`
-	MFAEnrolled            bool       `json:"mfa_enrolled"`
-	PhishingAlertFrequency string     `json:"phishing_alert_frequency"`
-	BulkCompletionNotify   string     `json:"bulk_completion_notification"`
-	ChallengeResponseMode  string     `json:"challenge_response_mode"`
-	LastLoginAt            *time.Time `json:"last_login_at,omitempty"`
-	CreatedAt              time.Time  `json:"created_at"`
-	UpdatedAt              time.Time  `json:"updated_at"`
+	ID                      uuid.UUID  `json:"id"`
+	OrganizationID          uuid.UUID  `json:"organization_id"`
+	Email                   string     `json:"email"`
+	Role                    string     `json:"role"`
+	DisplayName             *string    `json:"display_name,omitempty"`
+	IsActive                bool       `json:"is_active"`
+	MFAEnrolled             bool       `json:"mfa_enrolled"`
+	PhishingAlertFrequency  string     `json:"phishing_alert_frequency"`
+	BulkCompletionNotify    string     `json:"bulk_completion_notification"`
+	ChallengeResponseMode   string     `json:"challenge_response_mode"`
+	ChallengeAlertFrequency string     `json:"challenge_response_alert_frequency"`
+	LastLoginAt             *time.Time `json:"last_login_at,omitempty"`
+	CreatedAt               time.Time  `json:"created_at"`
+	UpdatedAt               time.Time  `json:"updated_at"`
 }
 
 const cols = `id, organization_id, email, role::text, display_name,
               is_active, (mfa_enrolled_at IS NOT NULL) AS mfa_enrolled,
-              phishing_alert_frequency, bulk_completion_notification, challenge_response_mode, last_login_at, created_at, updated_at`
+              phishing_alert_frequency, bulk_completion_notification, challenge_response_mode,
+              challenge_response_alert_frequency, last_login_at, created_at, updated_at`
 
 func scan(row pgx.Row, u *User) error {
 	return row.Scan(&u.ID, &u.OrganizationID, &u.Email, &u.Role, &u.DisplayName,
-		&u.IsActive, &u.MFAEnrolled, &u.PhishingAlertFrequency, &u.BulkCompletionNotify, &u.ChallengeResponseMode, &u.LastLoginAt, &u.CreatedAt, &u.UpdatedAt)
+		&u.IsActive, &u.MFAEnrolled, &u.PhishingAlertFrequency, &u.BulkCompletionNotify, &u.ChallengeResponseMode,
+		&u.ChallengeAlertFrequency, &u.LastLoginAt, &u.CreatedAt, &u.UpdatedAt)
 }
 
 type Handler struct{ DB *pgxpool.Pool }
@@ -115,15 +118,16 @@ func (h *Handler) list(w http.ResponseWriter, r *http.Request) {
 }
 
 type writeReq struct {
-	OrganizationID         *uuid.UUID `json:"organization_id,omitempty"`
-	Email                  string     `json:"email,omitempty"`
-	Role                   string     `json:"role,omitempty"`
-	DisplayName            *string    `json:"display_name,omitempty"`
-	IsActive               *bool      `json:"is_active,omitempty"`
-	Password               string     `json:"password,omitempty"`
-	PhishingAlertFrequency string     `json:"phishing_alert_frequency,omitempty"`
-	BulkCompletionNotify   string     `json:"bulk_completion_notification,omitempty"`
-	ChallengeResponseMode  string     `json:"challenge_response_mode,omitempty"`
+	OrganizationID          *uuid.UUID `json:"organization_id,omitempty"`
+	Email                   string     `json:"email,omitempty"`
+	Role                    string     `json:"role,omitempty"`
+	DisplayName             *string    `json:"display_name,omitempty"`
+	IsActive                *bool      `json:"is_active,omitempty"`
+	Password                string     `json:"password,omitempty"`
+	PhishingAlertFrequency  string     `json:"phishing_alert_frequency,omitempty"`
+	BulkCompletionNotify    string     `json:"bulk_completion_notification,omitempty"`
+	ChallengeResponseMode   string     `json:"challenge_response_mode,omitempty"`
+	ChallengeAlertFrequency string     `json:"challenge_response_alert_frequency,omitempty"`
 }
 
 var validRoles = map[string]bool{
@@ -169,6 +173,14 @@ func (h *Handler) create(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteError(w, http.StatusForbidden, "cannot assign that role")
 		return
 	}
+	if req.ChallengeResponseMode != "" && !validChallengeResponseMode(req.ChallengeResponseMode) {
+		httpx.WriteError(w, http.StatusBadRequest, "invalid challenge-response mode")
+		return
+	}
+	if req.ChallengeAlertFrequency != "" && !validChallengeAlertFrequency(req.ChallengeAlertFrequency) {
+		httpx.WriteError(w, http.StatusBadRequest, "invalid challenge-response alert frequency")
+		return
+	}
 
 	hash, err := auth.HashPassword(req.Password)
 	if err != nil {
@@ -178,10 +190,12 @@ func (h *Handler) create(w http.ResponseWriter, r *http.Request) {
 
 	var u User
 	err = scan(h.DB.QueryRow(r.Context(), `
-		INSERT INTO users (organization_id, email, password_hash, role, display_name, is_active, challenge_response_mode)
-		VALUES ($1, $2, $3, $4::user_role, $5, COALESCE($6, true), COALESCE(NULLIF($7,''), 'inherit'))
+		INSERT INTO users (organization_id, email, password_hash, role, display_name, is_active,
+		                   challenge_response_mode, challenge_response_alert_frequency)
+		VALUES ($1, $2, $3, $4::user_role, $5, COALESCE($6, true), COALESCE(NULLIF($7,''), 'inherit'),
+		        COALESCE(NULLIF($8,''), 'immediate'))
 		RETURNING `+cols,
-		orgID, req.Email, hash, req.Role, req.DisplayName, req.IsActive, req.ChallengeResponseMode), &u)
+		orgID, req.Email, hash, req.Role, req.DisplayName, req.IsActive, req.ChallengeResponseMode, req.ChallengeAlertFrequency), &u)
 	if err != nil {
 		if strings.Contains(err.Error(), "duplicate") {
 			httpx.WriteError(w, http.StatusConflict, "user already exists for that organization")
@@ -241,7 +255,7 @@ func (h *Handler) update(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	selfPreferenceUpdate := id == ident.UserID && (req.PhishingAlertFrequency != "" || req.BulkCompletionNotify != "") &&
+	selfPreferenceUpdate := id == ident.UserID && (req.PhishingAlertFrequency != "" || req.BulkCompletionNotify != "" || req.ChallengeAlertFrequency != "") &&
 		req.Email == "" && req.Role == "" && req.DisplayName == nil && req.IsActive == nil
 	if !selfPreferenceUpdate && !scope.CanAdmin(ident.Role, u.OrganizationID) {
 		httpx.WriteError(w, http.StatusForbidden, "forbidden")
@@ -267,6 +281,10 @@ func (h *Handler) update(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteError(w, http.StatusBadRequest, "invalid challenge-response mode")
 		return
 	}
+	if req.ChallengeAlertFrequency != "" && !validChallengeAlertFrequency(req.ChallengeAlertFrequency) {
+		httpx.WriteError(w, http.StatusBadRequest, "invalid challenge-response alert frequency")
+		return
+	}
 	if _, err := h.DB.Exec(r.Context(), `
 		UPDATE users SET
 		  email        = COALESCE(NULLIF($1,''), email),
@@ -276,9 +294,11 @@ func (h *Handler) update(w http.ResponseWriter, r *http.Request) {
 		  phishing_alert_frequency = COALESCE(NULLIF($5,''), phishing_alert_frequency),
 		  bulk_completion_notification = COALESCE(NULLIF($6,''), bulk_completion_notification),
 		  challenge_response_mode = COALESCE(NULLIF($7,''), challenge_response_mode),
+		  challenge_response_alert_frequency = COALESCE(NULLIF($8,''), challenge_response_alert_frequency),
 		  updated_at   = now()
-		WHERE id = $8
-	`, strings.ToLower(req.Email), req.Role, req.DisplayName, req.IsActive, req.PhishingAlertFrequency, req.BulkCompletionNotify, req.ChallengeResponseMode, id); err != nil {
+		WHERE id = $9
+	`, strings.ToLower(req.Email), req.Role, req.DisplayName, req.IsActive, req.PhishingAlertFrequency, req.BulkCompletionNotify,
+		req.ChallengeResponseMode, req.ChallengeAlertFrequency, id); err != nil {
 		httpx.WriteError(w, http.StatusInternalServerError, "update failed: "+err.Error())
 		return
 	}
@@ -306,6 +326,15 @@ func validBulkCompletionNotification(value string) bool {
 func validChallengeResponseMode(value string) bool {
 	switch value {
 	case "inherit", "enabled", "disabled":
+		return true
+	default:
+		return false
+	}
+}
+
+func validChallengeAlertFrequency(value string) bool {
+	switch value {
+	case "immediate", "hourly", "daily":
 		return true
 	default:
 		return false

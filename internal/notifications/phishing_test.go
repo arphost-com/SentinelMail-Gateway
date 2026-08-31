@@ -33,3 +33,40 @@ func TestShouldSendHonorsCadence(t *testing.T) {
 		})
 	}
 }
+
+func TestChallengeDigestDueHonorsCadenceAndRetry(t *testing.T) {
+	now := time.Date(2026, 8, 31, 12, 0, 0, 0, time.UTC)
+	recentAttempt := now.Add(-5 * time.Minute)
+	oldAttempt := now.Add(-16 * time.Minute)
+	recentSent := now.Add(-30 * time.Minute)
+	recentSuccessAttempt := recentSent.Add(-time.Second)
+	equalSuccessAttempt := recentSent
+	oldSent := now.Add(-25 * time.Hour)
+	newPending := now.Add(-2 * time.Minute)
+	oldPending := now.Add(-2 * time.Hour)
+
+	tests := []struct {
+		name      string
+		frequency string
+		attempt   *time.Time
+		sent      *time.Time
+		pending   time.Time
+		want      bool
+	}{
+		{name: "new immediate approval", frequency: "immediate", attempt: &recentSuccessAttempt, sent: &recentSent, pending: newPending, want: true},
+		{name: "successful claim does not back off next message", frequency: "immediate", attempt: &equalSuccessAttempt, sent: &recentSent, pending: newPending, want: true},
+		{name: "no duplicate immediate approval", frequency: "immediate", sent: &recentSent, pending: oldPending, want: false},
+		{name: "retry backoff", frequency: "immediate", attempt: &recentAttempt, pending: newPending, want: false},
+		{name: "retry after backoff", frequency: "immediate", attempt: &oldAttempt, pending: newPending, want: true},
+		{name: "hourly waits", frequency: "hourly", sent: &recentSent, pending: newPending, want: false},
+		{name: "daily due", frequency: "daily", sent: &oldSent, pending: oldPending, want: true},
+		{name: "invalid fails closed", frequency: "off", pending: newPending, want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := challengeDigestDue(tt.frequency, tt.attempt, tt.sent, tt.pending, now); got != tt.want {
+				t.Fatalf("challengeDigestDue() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}

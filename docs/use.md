@@ -42,10 +42,12 @@ When **Challenge-response approval** is enabled for a policy or mailbox, inbound
 
 - An existing block for the source email, sender domain, or source IP/CIDR is rejected and logged without creating an approval notice.
 - An explicitly allowed email address or verified sender domain may be delivered only when DMARC passes through aligned SPF or DKIM and the sending server supplies a usable reverse hostname. The normal malware, threat-intelligence, and hard authentication checks still apply.
-- Every other inbound sender is held in quarantine as pending approval. SentinelMail emails the protected recipient and the organization's active administrators, while suppressing duplicate notices for the same held message and notification recipient.
+- Every other inbound sender is held in quarantine as pending approval. SentinelMail emails the protected recipient and the organization's active administrators immediately or in an hourly/daily digest. Failed notices remain visible in **Sent Emails** and are retried after a short backoff.
+- Missing or failed SPF/DKIM/DMARC remains recorded as authentication evidence, but an otherwise non-malicious unknown sender still enters the approval queue. Detected phishing, malware, reputation hits, and explicit sender/domain/IP blocks remain threat quarantine or terminal blocks and are never presented as safe approval candidates.
 - Releasing pending mail creates an exact-address allow rule for the protected mailbox, including when an administrator performs the release. Blocking it creates a persistent deny rule, so later messages are rejected and only logged.
+- Inactive mailbox accounts receive no approval email and cannot approve or release pending mail. Their held messages remain visible to active organization administrators until the account is reactivated or the message is denied.
 
-Administrators can set strict approval at organization or protected-domain policy scope and override it for an individual mailbox from **Users**. Users and delegated administrators can create exact-address or verified-domain allow rules; source IP/CIDR rules are block-only.
+Administrators can set strict approval at organization or protected-domain policy scope, override it for an individual mailbox, set each user's approval-alert cadence, and activate/deactivate accounts from **Users**. Users and delegated administrators can create exact-address or verified-domain allow rules; source IP/CIDR rules are block-only. **Allow/block lists** can be filtered by scope and mailbox, and each rule has an explicit undo action.
 - **Purge expired** — admin-only cleanup that physically removes quarantine rows and stored message blobs whose retention window has expired. The default inbox and quarantine retention window is 90 days and can be set up to 365 days.
 
 ### Check what got delivered

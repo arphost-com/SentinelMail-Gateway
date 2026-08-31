@@ -32,11 +32,15 @@ type phishingMessage struct {
 }
 
 type alertUser struct {
-	ID        uuid.UUID
-	Email     string
-	Role      string
-	Frequency string
-	LastSent  *time.Time
+	ID                   uuid.UUID
+	OrganizationID       uuid.UUID
+	Email                string
+	Role                 string
+	Frequency            string
+	LastSent             *time.Time
+	ChallengeFrequency   string
+	ChallengeLastAttempt *time.Time
+	ChallengeLastSent    *time.Time
 }
 
 type pendingApproval struct {
@@ -98,11 +102,47 @@ func SendChallengeResponseAlertForMailLog(ctx context.Context, db *pgxpool.Pool,
 	}
 	var firstErr error
 	for _, u := range users {
-		if err := sendChallengeOne(ctx, db, msg, u); err != nil && firstErr == nil {
+		if _, err := sendChallengeOne(ctx, db, msg, u); err != nil && firstErr == nil {
 			firstErr = err
 		}
 	}
 	return firstErr
+}
+
+// RunChallengeResponseDigests sends due aggregate approval reminders and
+// retries failed attempts after a short backoff. It is safe to call from a
+// periodic background loop; SMTP failures remain observable in sent_emails and
+// never block inbound mail handling.
+func RunChallengeResponseDigests(ctx context.Context, db *pgxpool.Pool) (int, error) {
+	users, err := challengeDigestCandidates(ctx, db)
+	if err != nil {
+		return 0, err
+	}
+	sent := 0
+	var firstErr error
+	for _, u := range users {
+		msg, err := latestPendingMessage(ctx, db, u)
+		if err != nil {
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
+		if msg == nil {
+			continue
+		}
+		didSend, err := sendChallengeOne(ctx, db, msg, u)
+		if err != nil {
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
+		if didSend {
+			sent++
+		}
+	}
+	return sent, firstErr
 }
 
 func loadPhishingMessage(ctx context.Context, db *pgxpool.Pool, mailLogID uuid.UUID) (*phishingMessage, error) {
@@ -157,7 +197,9 @@ func challengeUsers(ctx context.Context, db *pgxpool.Pool, msg *phishingMessage)
 		return nil, nil
 	}
 	rows, err := db.Query(ctx, `
-		SELECT id, email::text, role::text, phishing_alert_frequency, phishing_alert_last_sent_at
+		SELECT id, organization_id, email::text, role::text, phishing_alert_frequency, phishing_alert_last_sent_at,
+		       challenge_response_alert_frequency, challenge_response_alert_last_attempt_at,
+		       challenge_response_alert_last_sent_at
 		  FROM users
 		 WHERE organization_id = $1
 		   AND is_active = true
@@ -170,7 +212,8 @@ func challengeUsers(ctx context.Context, db *pgxpool.Pool, msg *phishingMessage)
 	var out []alertUser
 	for rows.Next() {
 		var u alertUser
-		if err := rows.Scan(&u.ID, &u.Email, &u.Role, &u.Frequency, &u.LastSent); err != nil {
+		if err := rows.Scan(&u.ID, &u.OrganizationID, &u.Email, &u.Role, &u.Frequency, &u.LastSent,
+			&u.ChallengeFrequency, &u.ChallengeLastAttempt, &u.ChallengeLastSent); err != nil {
 			return nil, err
 		}
 		out = append(out, u)
@@ -233,39 +276,33 @@ func sendOne(ctx context.Context, db *pgxpool.Pool, msg *phishingMessage, u aler
 	})
 }
 
-func sendChallengeOne(ctx context.Context, db *pgxpool.Pool, msg *phishingMessage, u alertUser) error {
-	var alreadySent bool
-	if err := db.QueryRow(ctx, `
-		SELECT EXISTS (
-			SELECT 1 FROM sent_emails se
-			 WHERE mail_log_id = $1 AND kind = 'challenge_response_alert'
-			   AND EXISTS (SELECT 1 FROM unnest(se.to_addrs) AS addr WHERE lower(addr) = lower($2))
-			   AND status IN ('pending'::sent_email_status, 'sent'::sent_email_status)
-		)
-	`, msg.MailLogID, u.Email).Scan(&alreadySent); err != nil {
-		return err
+func sendChallengeOne(ctx context.Context, db *pgxpool.Pool, msg *phishingMessage, u alertUser) (bool, error) {
+	now := time.Now()
+	if !challengeDigestDue(u.ChallengeFrequency, u.ChallengeLastAttempt, u.ChallengeLastSent, msg.ReceivedAt, now) {
+		return false, nil
 	}
-	if alreadySent {
-		return nil
+	claimed, err := claimChallengeDigestAttempt(ctx, db, u.ID, now)
+	if err != nil || !claimed {
+		return false, err
 	}
 	pending, err := pendingApprovals(ctx, db, msg.OrganizationID, u)
 	if err != nil {
-		return err
+		return false, err
 	}
 	host, port, err := gatewayForRecipient(ctx, db, msg.OrganizationID, u.Email)
 	if err != nil {
-		return err
+		return false, err
 	}
 	from, err := alertFrom(ctx, db, msg.OrganizationID)
 	if err != nil {
-		return err
+		return false, err
 	}
 	raw, err := buildChallengeResponseEmail(ctx, db, from, u.Email, msg, pending)
 	if err != nil {
-		return err
+		return false, err
 	}
 	subject := "SentinelMail is holding mail for your approval"
-	return sentemails.Send(ctx, db, sentemails.Record{
+	err = sentemails.Send(ctx, db, sentemails.Record{
 		OrganizationID: msg.OrganizationID,
 		DomainID:       msg.DomainID,
 		MailLogID:      &msg.MailLogID,
@@ -276,10 +313,129 @@ func sendChallengeOne(ctx context.Context, db *pgxpool.Pool, msg *phishingMessag
 		RelayHost:      host,
 		RelayPort:      port,
 		Raw:            raw,
-		Metadata:       map[string]any{"alert_user_id": u.ID.String()},
+		Metadata: map[string]any{
+			"alert_user_id":    u.ID.String(),
+			"digest_frequency": u.ChallengeFrequency,
+			"pending_count":    len(pending),
+		},
 	}, func() error {
 		return smtp.SendMail(net.JoinHostPort(host, fmt.Sprint(port)), nil, from.Address, []string{u.Email}, raw)
 	})
+	if err != nil {
+		return false, err
+	}
+	_, err = db.Exec(ctx, `
+		UPDATE users
+		   SET challenge_response_alert_last_sent_at = $2,
+		       challenge_response_alert_last_attempt_at = $2,
+		       updated_at = now()
+		 WHERE id = $1
+	`, u.ID, msg.ReceivedAt)
+	return err == nil, err
+}
+
+const challengeDigestRetryDelay = 15 * time.Minute
+
+func challengeDigestDue(frequency string, lastAttempt, lastSent *time.Time, newestPending, now time.Time) bool {
+	// Back off only an attempt that did not subsequently succeed. A newly held
+	// message must still trigger an immediate digest after an earlier success.
+	if lastAttempt != nil && (lastSent == nil || lastAttempt.After(*lastSent)) && now.Sub(*lastAttempt) < challengeDigestRetryDelay {
+		return false
+	}
+	switch frequency {
+	case "hourly":
+		return lastSent == nil || now.Sub(*lastSent) >= time.Hour
+	case "daily":
+		return lastSent == nil || now.Sub(*lastSent) >= 24*time.Hour
+	case "immediate", "":
+		return lastSent == nil || newestPending.After(*lastSent)
+	default:
+		return false
+	}
+}
+
+func claimChallengeDigestAttempt(ctx context.Context, db *pgxpool.Pool, userID uuid.UUID, now time.Time) (bool, error) {
+	var claimed bool
+	err := db.QueryRow(ctx, `
+		UPDATE users
+		   SET challenge_response_alert_last_attempt_at = $2, updated_at = now()
+		 WHERE id = $1
+		   AND is_active = true
+		   AND (challenge_response_alert_last_attempt_at IS NULL
+		        OR challenge_response_alert_last_attempt_at <= $2::timestamptz - interval '15 minutes'
+		        OR (challenge_response_alert_last_sent_at IS NOT NULL
+		            AND challenge_response_alert_last_attempt_at <= challenge_response_alert_last_sent_at))
+		RETURNING true
+	`, userID, now).Scan(&claimed)
+	if err == pgx.ErrNoRows {
+		return false, nil
+	}
+	return claimed, err
+}
+
+func challengeDigestCandidates(ctx context.Context, db *pgxpool.Pool) ([]alertUser, error) {
+	rows, err := db.Query(ctx, `
+		SELECT u.id, u.organization_id, u.email::text, u.role::text,
+		       u.phishing_alert_frequency, u.phishing_alert_last_sent_at,
+		       u.challenge_response_alert_frequency, u.challenge_response_alert_last_attempt_at,
+		       u.challenge_response_alert_last_sent_at
+		  FROM users u
+		 WHERE u.is_active = true
+		   AND u.role IN ('org_user'::user_role, 'org_admin'::user_role)
+		   AND EXISTS (
+			SELECT 1
+			  FROM quarantine_entries qe
+			  JOIN mail_logs ml ON ml.id = qe.mail_log_id
+			 WHERE qe.organization_id = u.organization_id
+			   AND qe.state = 'held'::quarantine_state
+			   AND ml.disposition = 'quarantined'::mail_disposition
+			   AND lower(COALESCE(ml.reason, '')) = 'pending recipient challenge-response approval'
+			   AND (u.role = 'org_admin'::user_role OR lower(qe.to_addr) = lower(u.email::text))
+		   )
+	 ORDER BY u.organization_id, u.email
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []alertUser{}
+	for rows.Next() {
+		var u alertUser
+		if err := rows.Scan(&u.ID, &u.OrganizationID, &u.Email, &u.Role, &u.Frequency, &u.LastSent,
+			&u.ChallengeFrequency, &u.ChallengeLastAttempt, &u.ChallengeLastSent); err != nil {
+			return nil, err
+		}
+		out = append(out, u)
+	}
+	return out, rows.Err()
+}
+
+func latestPendingMessage(ctx context.Context, db *pgxpool.Pool, u alertUser) (*phishingMessage, error) {
+	clauses := ""
+	args := []any{u.OrganizationID}
+	if u.Role == "org_user" {
+		clauses = " AND lower(qe.to_addr) = lower($2)"
+		args = append(args, u.Email)
+	}
+	var mailLogID uuid.UUID
+	err := db.QueryRow(ctx, `
+		SELECT ml.id
+		  FROM quarantine_entries qe
+		  JOIN mail_logs ml ON ml.id = qe.mail_log_id
+		 WHERE qe.organization_id = $1
+		   AND qe.state = 'held'::quarantine_state
+		   AND ml.disposition = 'quarantined'::mail_disposition
+		   AND lower(COALESCE(ml.reason, '')) = 'pending recipient challenge-response approval'`+clauses+`
+		 ORDER BY qe.received_at DESC
+		 LIMIT 1
+	`, args...).Scan(&mailLogID)
+	if err == pgx.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return loadPhishingMessage(ctx, db, mailLogID)
 }
 
 func pendingApprovals(ctx context.Context, db *pgxpool.Pool, orgID uuid.UUID, u alertUser) ([]pendingApproval, error) {
