@@ -104,6 +104,7 @@ func serve() error {
 	startMessageRetentionPurgeLoop(ctx, log, pool)
 	startDeepAnalysisTimeoutLoop(ctx, log, pool)
 	startChallengeResponseDigestLoop(ctx, log, pool)
+	startQuarantineDigestLoop(ctx, log, pool)
 
 	// In prod we expect to sit behind TLS termination (nginx/web container or external LB).
 	// Honor X-Forwarded-Proto via middleware.RealIP; mark cookies Secure unless explicit dev.
@@ -151,6 +152,28 @@ func startChallengeResponseDigestLoop(ctx context.Context, log *slog.Logger, poo
 					log.Warn("challenge_response.digest_failed", slog.String("error", err.Error()))
 				} else if sent > 0 {
 					log.Info("challenge_response.digest_sent", slog.Int("recipients", sent))
+				}
+			}
+		}
+	}()
+}
+
+func startQuarantineDigestLoop(ctx context.Context, log *slog.Logger, pool *pgxpool.Pool) {
+	go func() {
+		ticker := time.NewTicker(time.Minute)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				runCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+				sent, err := notifications.RunQuarantineAlertDigests(runCtx, pool)
+				cancel()
+				if err != nil {
+					log.Warn("quarantine_digest.failed", slog.String("error", err.Error()))
+				} else if sent > 0 {
+					log.Info("quarantine_digest.sent", slog.Int("recipients", sent))
 				}
 			}
 		}

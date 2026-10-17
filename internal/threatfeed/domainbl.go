@@ -40,8 +40,12 @@ func (d *DomainBL) Lookup(ctx context.Context, value string) (Result, error) {
 		}
 		return Result{}, err
 	}
-	if len(addrs) > 0 {
-		return Result{Hit: true, Source: d.FeedName}, nil
+	listed, codeErr := firstListed(addrs, domainblListed)
+	if listed {
+		return Result{Hit: true, Source: d.FeedName, Metadata: map[string]any{"response": addrs}}, nil
+	}
+	if codeErr != nil {
+		return Result{}, codeErr
 	}
 	return Result{Hit: false}, nil
 }

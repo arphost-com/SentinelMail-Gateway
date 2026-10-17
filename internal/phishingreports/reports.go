@@ -5,6 +5,7 @@ package phishingreports
 import (
 	"context"
 	"encoding/json"
+	"log/slog"
 	"strings"
 
 	"github.com/google/uuid"
@@ -73,7 +74,10 @@ func RecordFromScan(ctx context.Context, db *pgxpool.Pool, scanJobID uuid.UUID, 
 		return err
 	}
 	if mailLogID != nil {
-		_ = notifications.SendPhishingAlertForMailLog(ctx, db, *mailLogID)
+		if err := notifications.SendPhishingAlertForMailLog(ctx, db, *mailLogID); err != nil {
+			slog.Default().Warn("quarantine_alert.send_failed",
+				slog.String("mail_log_id", mailLogID.String()), slog.String("error", err.Error()))
+		}
 	}
 	return nil
 }

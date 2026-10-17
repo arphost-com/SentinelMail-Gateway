@@ -9,6 +9,8 @@ FROM mcr.microsoft.com/playwright/python:v1.49.0-noble
 RUN apt-get update && apt-get upgrade -y --no-install-recommends \
     && apt-get install -y --no-install-recommends python3-venv \
     && rm -rf /var/lib/apt/lists/* \
+    && (python -m pip install --no-cache-dir --upgrade "virtualenv>=21.7.13" \
+        || python -m pip install --no-cache-dir --upgrade --break-system-packages "virtualenv>=21.7.13") \
     && python -m venv /opt/venv \
     && install -d -o pwuser -g pwuser /app
 WORKDIR /app

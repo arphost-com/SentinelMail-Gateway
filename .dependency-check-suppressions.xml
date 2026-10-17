@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<suppressions xmlns="https://jeremylong.github.io/DependencyCheck/dependency-suppression.1.3.xsd">
+  <!--
+    braces <= 3.0.3 stack exhaustion advisory. There is no patched release on
+    npm (3.0.3 is the latest version and the advisory is disputed upstream,
+    see micromatch/braces issue 84). braces is a build-time transitive
+    dependency of the Vite toolchain only; it is never shipped in the web
+    image or reachable from request paths. Remove this entry once a fixed
+    braces release exists.
+  -->
+  <suppress>
+    <notes>braces advisory has no fixed release; dev-only build tooling, not shipped.</notes>
+    <packageUrl regex="true">^pkg:npm/braces@.*$</packageUrl>
+    <vulnerabilityName>GHSA-vfj7-8cjw-p6xm</vulnerabilityName>
+  </suppress>
+</suppressions>

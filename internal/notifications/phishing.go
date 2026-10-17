@@ -28,6 +28,7 @@ type phishingMessage struct {
 	Subject        string
 	ClientIP       string
 	Reason         string
+	ThreatClass    string
 	ReceivedAt     time.Time
 }
 
@@ -50,9 +51,11 @@ type pendingApproval struct {
 	ReceivedAt time.Time
 }
 
-// SendPhishingAlertForMailLog sends recipient alerts for a mail log that has
-// been quarantined as phishing. It is best-effort: failures are returned so
-// callers can log/surface them, but mail flow must never depend on it.
+// SendPhishingAlertForMailLog sends immediate per-message recipient alerts
+// for a quarantined mail log. Only users on the immediate cadence are
+// notified here; daily and weekly users receive the scheduled quarantine
+// digest. It is best-effort: failures are returned so callers can
+// log/surface them, but mail flow must never depend on it.
 func SendPhishingAlertForMailLog(ctx context.Context, db *pgxpool.Pool, mailLogID uuid.UUID) error {
 	msg, err := loadPhishingMessage(ctx, db, mailLogID)
 	if err != nil {
@@ -68,7 +71,10 @@ func SendPhishingAlertForMailLog(ctx context.Context, db *pgxpool.Pool, mailLogI
 
 	var firstErr error
 	for _, u := range users {
-		if !shouldSend(u.Frequency, u.LastSent, time.Now()) {
+		if u.Frequency != "immediate" {
+			// Daily and weekly users get the scheduled quarantine digest
+			// from RunQuarantineAlertDigests instead of per-message alerts,
+			// so a single early message no longer consumes the whole window.
 			continue
 		}
 		if err := sendOne(ctx, db, msg, u); err != nil {
@@ -148,14 +154,19 @@ func RunChallengeResponseDigests(ctx context.Context, db *pgxpool.Pool) (int, er
 func loadPhishingMessage(ctx context.Context, db *pgxpool.Pool, mailLogID uuid.UUID) (*phishingMessage, error) {
 	var msg phishingMessage
 	err := db.QueryRow(ctx, `
-		SELECT id, organization_id, domain_id, COALESCE(from_addr, ''),
-		       to_addrs, COALESCE(subject, ''), COALESCE(client_ip::text, ''),
-		       COALESCE(reason, ''), received_at
-		  FROM mail_logs
-		 WHERE id = $1
-		   AND disposition = 'quarantined'
+		SELECT ml.id, ml.organization_id, ml.domain_id, COALESCE(ml.from_addr, ''),
+		       ml.to_addrs, COALESCE(ml.subject, ''), COALESCE(ml.client_ip::text, ''),
+		       COALESCE(ml.reason, ''), ml.received_at,
+		       COALESCE((SELECT qe.threat_class
+		                   FROM quarantine_entries qe
+		                  WHERE qe.mail_log_id = ml.id
+		               ORDER BY qe.received_at DESC
+		                  LIMIT 1), '')
+		  FROM mail_logs ml
+		 WHERE ml.id = $1
+		   AND ml.disposition = 'quarantined'
 	`, mailLogID).Scan(&msg.MailLogID, &msg.OrganizationID, &msg.DomainID, &msg.FromAddr,
-		&msg.ToAddrs, &msg.Subject, &msg.ClientIP, &msg.Reason, &msg.ReceivedAt)
+		&msg.ToAddrs, &msg.Subject, &msg.ClientIP, &msg.Reason, &msg.ReceivedAt, &msg.ThreatClass)
 	if err != nil {
 		if err == pgx.ErrNoRows {
 			return nil, nil
@@ -254,16 +265,16 @@ func sendOne(ctx context.Context, db *pgxpool.Pool, msg *phishingMessage, u aler
 	if err != nil {
 		return err
 	}
-	raw, err := buildPhishingAlertEmail(ctx, db, from, u.Email, msg)
+	subject, kind := alertSubjectKind(msg.ThreatClass)
+	raw, err := buildPhishingAlertEmail(ctx, db, from, u.Email, msg, subject)
 	if err != nil {
 		return err
 	}
-	subject := "SentinelMail quarantined a phishing email"
 	return sentemails.Send(ctx, db, sentemails.Record{
 		OrganizationID: msg.OrganizationID,
 		DomainID:       msg.DomainID,
 		MailLogID:      &msg.MailLogID,
-		Kind:           "phishing_alert",
+		Kind:           kind,
 		FromAddr:       from.Address,
 		ToAddrs:        []string{u.Email},
 		Subject:        subject,
@@ -324,13 +335,17 @@ func sendChallengeOne(ctx context.Context, db *pgxpool.Pool, msg *phishingMessag
 	if err != nil {
 		return false, err
 	}
+	// Record the send time itself. Storing the newest pending message's
+	// received time here made hourly and daily digests come due again on the
+	// next tick once that message aged past the cadence, which resent the
+	// reminder every minute until the message was released or deleted.
 	_, err = db.Exec(ctx, `
 		UPDATE users
 		   SET challenge_response_alert_last_sent_at = $2,
 		       challenge_response_alert_last_attempt_at = $2,
 		       updated_at = now()
 		 WHERE id = $1
-	`, u.ID, msg.ReceivedAt)
+	`, u.ID, time.Now())
 	return err == nil, err
 }
 
@@ -540,9 +555,17 @@ func lookupSetting(ctx context.Context, db *pgxpool.Pool, orgID *uuid.UUID, key,
 	return strings.TrimSpace(value)
 }
 
-func buildPhishingAlertEmail(ctx context.Context, db *pgxpool.Pool, from *stdmail.Address, to string, msg *phishingMessage) ([]byte, error) {
+// alertSubjectKind picks the subject line and sent_emails kind for a
+// per-message quarantine alert based on the stored threat class.
+func alertSubjectKind(threatClass string) (string, string) {
+	if threatClass == "PHISHING" {
+		return "SentinelMail quarantined a phishing email", "phishing_alert"
+	}
+	return "SentinelMail quarantined a suspicious email", "quarantine_alert"
+}
+
+func buildPhishingAlertEmail(ctx context.Context, db *pgxpool.Pool, from *stdmail.Address, to string, msg *phishingMessage, subject string) ([]byte, error) {
 	link := quarantineURL(ctx, db, msg, to)
-	subject := "SentinelMail quarantined a phishing email"
 	text := textAlert(to, msg, link)
 	htmlBody := htmlAlert(to, msg, link)
 	boundary := "smg-phishing-alert-boundary"
@@ -588,14 +611,29 @@ func buildChallengeResponseEmail(ctx context.Context, db *pgxpool.Pool, from *st
 	return []byte(body), nil
 }
 
+func alertHeadline(threatClass string) string {
+	if threatClass == "PHISHING" {
+		return "phishing email"
+	}
+	return "suspicious email"
+}
+
+func alertCategory(threatClass string) string {
+	if threatClass == "" {
+		return "quarantined"
+	}
+	return strings.ToLower(strings.ReplaceAll(threatClass, "_", " "))
+}
+
 func textAlert(to string, msg *phishingMessage, link string) string {
 	lines := []string{
-		"SentinelMail quarantined a phishing email before it reached your mailbox.",
+		"SentinelMail quarantined a " + alertHeadline(msg.ThreatClass) + " before it reached your mailbox.",
 		"",
 		"Recipient: " + to,
 		"From: " + emptyDash(msg.FromAddr),
 		"Subject: " + emptyDash(msg.Subject),
 		"Source IP: " + emptyDash(msg.ClientIP),
+		"Category: " + alertCategory(msg.ThreatClass),
 		"Reason: " + emptyDash(msg.Reason),
 	}
 	if link != "" {
@@ -637,10 +675,10 @@ func htmlAlert(to string, msg *phishingMessage, link string) string {
 	return `<!doctype html><html><body style="margin:0;background:#f4f7fb;color:#102033;font-family:Arial,Helvetica,sans-serif">
 <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background:#f4f7fb;padding:28px 12px"><tr><td align="center">
 <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width:640px;background:#ffffff;border:1px solid #d8e2ef;border-radius:12px;overflow:hidden">
-<tr><td style="background:#0f172a;color:#ffffff;padding:22px 26px"><div style="font-size:13px;letter-spacing:.08em;text-transform:uppercase;color:#93c5fd">SentinelMail Gateway</div><h1 style="margin:8px 0 0;font-size:24px;line-height:1.25">Phishing email quarantined</h1></td></tr>
-<tr><td style="padding:26px"><p style="margin:0 0 18px;font-size:16px;line-height:1.5">A phishing email was held before it reached your mailbox.</p>
+<tr><td style="background:#0f172a;color:#ffffff;padding:22px 26px"><div style="font-size:13px;letter-spacing:.08em;text-transform:uppercase;color:#93c5fd">SentinelMail Gateway</div><h1 style="margin:8px 0 0;font-size:24px;line-height:1.25">Email quarantined</h1></td></tr>
+<tr><td style="padding:26px"><p style="margin:0 0 18px;font-size:16px;line-height:1.5">A ` + alertHeadline(msg.ThreatClass) + ` was held before it reached your mailbox.</p>
 <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse;background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px">
-` + detailRow("Recipient", to) + detailRow("From", emptyDash(msg.FromAddr)) + detailRow("Subject", emptyDash(msg.Subject)) + detailRow("Source IP", emptyDash(msg.ClientIP)) + detailRow("Reason", emptyDash(msg.Reason)) + `
+` + detailRow("Recipient", to) + detailRow("From", emptyDash(msg.FromAddr)) + detailRow("Subject", emptyDash(msg.Subject)) + detailRow("Source IP", emptyDash(msg.ClientIP)) + detailRow("Category", alertCategory(msg.ThreatClass)) + detailRow("Reason", emptyDash(msg.Reason)) + `
 </table><table role="presentation" cellspacing="0" cellpadding="0">` + button + `</table>
 <p style="margin:18px 0 0;color:#64748b;font-size:13px;line-height:1.5">Do not click links in the original message. Review or delete it from SentinelMail quarantine.</p></td></tr>
 </table></td></tr></table></body></html>`

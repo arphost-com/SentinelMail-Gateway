@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/netip"
 	"net/url"
@@ -288,8 +289,20 @@ func (h *IngestHandler) handle(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
-		if !suppressDuplicate && threatClass == "PHISHING" {
-			if campaign.ID != uuid.Nil {
+		if !suppressDuplicate && threatClass == "CHALLENGE_RESPONSE" {
+			go func(id uuid.UUID) {
+				ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+				defer cancel()
+				if err := notifications.SendChallengeResponseAlertForMailLog(ctx, h.DB, id); err != nil {
+					slog.Default().Warn("challenge_alert.send_failed",
+						slog.String("mail_log_id", id.String()), slog.String("error", err.Error()))
+				}
+			}(mailLogID)
+		} else if !suppressDuplicate && threatClass != "PENDING_ANALYSIS" {
+			// Every quarantined class alerts immediate-cadence recipients, not
+			// just PHISHING. Deep-analysis holds stay silent because most are
+			// released again within minutes.
+			if threatClass == "PHISHING" && campaign.ID != uuid.Nil {
 				_, _ = h.DB.Exec(r.Context(), `
 					UPDATE mail_campaigns
 					   SET last_alert_at = now(), updated_at = now()
@@ -299,13 +312,10 @@ func (h *IngestHandler) handle(w http.ResponseWriter, r *http.Request) {
 			go func(id uuid.UUID) {
 				ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 				defer cancel()
-				_ = notifications.SendPhishingAlertForMailLog(ctx, h.DB, id)
-			}(mailLogID)
-		} else if !suppressDuplicate && threatClass == "CHALLENGE_RESPONSE" {
-			go func(id uuid.UUID) {
-				ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-				defer cancel()
-				_ = notifications.SendChallengeResponseAlertForMailLog(ctx, h.DB, id)
+				if err := notifications.SendPhishingAlertForMailLog(ctx, h.DB, id); err != nil {
+					slog.Default().Warn("quarantine_alert.send_failed",
+						slog.String("mail_log_id", id.String()), slog.String("error", err.Error()))
+				}
 			}(mailLogID)
 		}
 	}
