@@ -1,11 +1,13 @@
 # syntax=docker/dockerfile:1.7
-FROM golang:1.26.9-alpine AS build
+FROM golang:1.26.10-alpine AS build
 ARG CADDY_VERSION=v2.11.4
 
 RUN apk add --no-cache git
 WORKDIR /src/caddy
 RUN git clone --depth 1 --branch "${CADDY_VERSION}" https://github.com/caddyserver/caddy.git . && \
     go mod edit -require github.com/go-jose/go-jose/v3@v3.0.5 && \
+    go mod edit -require github.com/go-jose/go-jose/v4@v4.1.6 && \
+    go mod edit -require github.com/klauspost/compress@v1.18.7 && \
     go mod edit -require golang.org/x/crypto@v0.55.0 && \
     go mod edit -require google.golang.org/grpc@v1.83.2 && \
     go mod edit -require golang.org/x/net@v0.60.0 && \

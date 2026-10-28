@@ -488,6 +488,72 @@ func TestBrandImpersonationQuarantinesDocusignClaimFromUnrelatedDomain(t *testin
 	}
 }
 
+func TestBrandImpersonationQuarantinesBodyOnlySignatureLure(t *testing.T) {
+	// Sanitized from a delivered template: the authenticated third-party sender
+	// does not claim the brand in its name or subject.
+	ev := &Event{
+		Direction: "inbound",
+		From:      "bounces@mailer.example",
+		FromName:  "DocsAdmin",
+		Subject:   "Recent document is ready to view now",
+		BodyText: "A document is ready for review and electronic signature. Review & Sign. " +
+			"Status: Signature Pending. Delivered through DocuSign's electronic signature platform.",
+		URLs: []string{
+			"https://click.mailer.example/q/tracking-token",
+			"https://documents.example.invalid/docssummary/",
+		},
+		Symbols: map[string]any{"R_DKIM_ALLOW": true, "DMARC_POLICY_ALLOW": true},
+	}
+	got, reason := applyBrandImpersonationDetection("delivered", "", "", nil, ev)
+	if got != "quarantined" || !strings.Contains(reason, "body claims docusign signature workflow") {
+		t.Fatalf("body-only lure changed to %q/%q, want quarantine", got, reason)
+	}
+	if threat := classifyThreat(ev); threat != "PHISHING" {
+		t.Fatalf("threat = %q, want PHISHING", threat)
+	}
+}
+
+func TestBrandImpersonationQuarantinesBodyOnlyEnvelopeLure(t *testing.T) {
+	ev := &Event{
+		Direction: "inbound", From: "bounces@mailer.example", FromName: "DocsAdmin",
+		Subject: "Confidential document shared with you for review",
+		BodyText: "We placed the document in your DocuSign envelope for review and electronic approval. " +
+			"Signature status: Signature Pending. Review & Sign.",
+		URLs: []string{"https://documents.example.invalid/review/"},
+	}
+	got, reason := applyBrandImpersonationDetection("delivered", "", "", nil, ev)
+	if got != "quarantined" || !strings.Contains(reason, "body claims docusign signature workflow") {
+		t.Fatalf("body-only envelope lure changed to %q/%q, want quarantine", got, reason)
+	}
+}
+
+func TestBrandImpersonationBodyOnlySignatureLureFalsePositiveGuards(t *testing.T) {
+	base := Event{
+		Direction: "inbound", From: "bounces@mailer.example", FromName: "DocsAdmin",
+		Subject:  "Recent document is ready to view now",
+		BodyText: "Review & Sign. Signature Pending. Delivered through DocuSign's electronic signature platform.",
+		URLs:     []string{"https://documents.example.invalid/review/"},
+	}
+	for name, change := range map[string]func(*Event){
+		"official link": func(ev *Event) {
+			ev.URLs = []string{"https://click.mailer.example/q/tracking-token", "https://apps.docusign.com/review/"}
+		},
+		"official sender":    func(ev *Event) { ev.From = "notice@docusign.net" },
+		"ordinary mention":   func(ev *Event) { ev.BodyText = "Our team uses DocuSign for signatures." },
+		"no action link":     func(ev *Event) { ev.URLs = nil },
+		"unrelated document": func(ev *Event) { ev.BodyText = "Review & Sign. Signature Pending. The document is in our own portal." },
+	} {
+		t.Run(name, func(t *testing.T) {
+			ev := base
+			change(&ev)
+			got, reason := applyBrandImpersonationDetection("delivered", "", "", nil, &ev)
+			if got != "delivered" || reason != "" {
+				t.Fatalf("legitimate example changed to %q/%q", got, reason)
+			}
+		})
+	}
+}
+
 func TestBrandImpersonationMainPolicyToggleDisablesDetection(t *testing.T) {
 	ev := &Event{
 		Direction: "inbound",

@@ -24,7 +24,7 @@ import httpx
 import redis
 import structlog
 
-from handler import handle_sandbox
+from isolation import run_isolated
 
 log = structlog.get_logger()
 
@@ -33,8 +33,6 @@ QUEUE_KEY = os.environ.get("SMG_SANDBOX_QUEUE", "smg:scan_jobs_sandbox")
 POLL_TIMEOUT = int(os.environ.get("SMG_POLL_TIMEOUT", "5"))
 API_BASE = os.environ.get("SMG_API_BASE", "http://api:8080").rstrip("/")
 INGEST_SECRET = os.environ.get("SMG_INGEST_HMAC_KEY", "")
-
-HANDLERS = {"sandbox": handle_sandbox}
 
 _running = True
 
@@ -89,8 +87,7 @@ def process_one(api: APIClient, env: dict[str, Any]) -> None:
     if not scan_id or not kind:
         log.warning("job.invalid_envelope", envelope=env)
         return
-    handler = HANDLERS.get(kind)
-    if handler is None:
+    if kind != "sandbox":
         log.info("job.skip_unhandled_kind", kind=kind, scan_id=scan_id)
         return
     if not api.post_result(scan_id, "running"):
@@ -100,7 +97,7 @@ def process_one(api: APIClient, env: dict[str, Any]) -> None:
         api.post_result(scan_id, "failed", error="payload fetch failed")
         return
     try:
-        out = handler(job.get("payload") or {}, api.http)
+        out = run_isolated(job.get("payload") or {})
     except Exception as e:                                  # noqa: BLE001
         log.exception("handler.crash", kind=kind, scan_id=scan_id)
         api.post_result(scan_id, "failed", error=f"handler crash: {e}")

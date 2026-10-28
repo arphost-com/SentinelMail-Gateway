@@ -1683,6 +1683,17 @@ func scoreBrandClaim(ev *Event, fromDomain string, profile protectedBrandProfile
 		analysis.Score += 45
 		analysis.Signals = append(analysis.Signals, "message claims "+profile.name+" with sensitive context")
 	}
+	// Some impersonation templates put the brand claim entirely in the body.
+	// Require a signature workflow, an action request, and an off-domain URL;
+	// a passing DKIM signature for an unrelated sending service is insufficient.
+	if opts.LinkMismatchEnabled && bodyClaim && !displayNameClaim && !subjectClaim &&
+		containsAny(body, []string{"review & sign", "review and sign", "sign the document", "electronic approval"}) &&
+		containsAny(body, []string{"signature pending", "electronic signature", "signature platform", "envelope"}) {
+		if host := firstMismatchedDirectURLHost(ev, fromDomain, profile); host != "" {
+			analysis.Score += 80
+			analysis.Signals = append(analysis.Signals, "body claims "+profile.name+" signature workflow with link to unrelated domain "+host)
+		}
+	}
 	if pressureClaim {
 		analysis.Score += 80
 		analysis.Signals = append(analysis.Signals, "account or payment pressure asks the recipient to update details")
@@ -1709,6 +1720,24 @@ func scoreBrandClaim(ev *Event, fromDomain string, profile protectedBrandProfile
 		return brandAnalysis{}
 	}
 	return analysis
+}
+
+func firstMismatchedDirectURLHost(ev *Event, fromDomain string, profile protectedBrandProfile) string {
+	if ev == nil {
+		return ""
+	}
+	// Redirect and click-tracking URLs belong to the sender's mail platform,
+	// not necessarily to the signature destination claimed in the message.
+	direct := *ev
+	direct.URLs = nil
+	for _, raw := range ev.URLs {
+		parsed, err := url.Parse(strings.TrimSpace(raw))
+		if err != nil || strings.HasPrefix(strings.ToLower(parsed.Hostname()), "click.") {
+			continue
+		}
+		direct.URLs = append(direct.URLs, raw)
+	}
+	return firstMismatchedURLHost(&direct, fromDomain, profile)
 }
 
 func firstMismatchedURLHost(ev *Event, fromDomain string, profile protectedBrandProfile) string {
